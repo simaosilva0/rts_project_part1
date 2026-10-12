@@ -38,7 +38,7 @@ main loop:
 
 Things to decide early:
 
-- Timer1 source: SOSC 32.768 kHz if the crystal is fitted, otherwise LFINTOSC. Async mode so it counts in sleep.
+- Timer1 source: LFINTOSC (~31 kHz internal; the board has no 32.768 kHz crystal). Async mode so it counts in sleep.
 - LCD: check with the lab if it is 4-bit parallel or I2C backpack.
 - PWM output mapped to RA4 with PPS.
 - PWM uses Timer2. If Timer2 runs from Fosc it stops in sleep, so either don't sleep while TALA is active or clock Timer2 from LFINTOSC.
@@ -67,7 +67,7 @@ Defaults: PMON 5, TALA 3, ALAF 0, ALAH 12, ALAM 0, ALAS 0, ALAT 25, ALAL 3, CLKH
 
 ## MCC
 
-Peripheral drivers are generated with MCC (Melody) into `project.X/mcc_generated_files/`.
+Peripheral drivers are generated with MCC Classic into `project.X/mcc_generated_files/`.
 
 - Commit both the generated files and the MCC config file (`.mc3`), so anyone can open the project and regenerate.
 - Only A edits the MCC config and regenerates. If you need a peripheral changed, ask A. That way the generated files never conflict in merges.
@@ -75,7 +75,7 @@ Peripheral drivers are generated with MCC (Melody) into `project.X/mcc_generated
 
 Configured in MCC:
 
-- Timer1: 1 s interrupt, SOSC or LFINTOSC, async (runs in sleep)
+- Timer1: 1 s interrupt, LFINTOSC, async (runs in sleep)
 - Timer2 + PWM on RA4 through PPS (LED D2)
 - MSSP I2C host (TC74)
 - ADC (potentiometer)
@@ -175,6 +175,6 @@ Each person writes their part, A puts it together.
 
 ## Rules
 
-- Work on branches, merge to master only when it builds.
+- No branches: commit to master, and only code that builds.
 - Don't commit build folders (`build/`, `dist/`, `nbproject/private/`). Do commit `mcc_generated_files/` and the `.mc3` file.
 - Keep ISRs short. No delays inside ISRs.

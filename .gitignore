@@ -9,3 +9,4 @@
 *.elf
 *.hex
 *.map
+mcc-manifest-autosave.yml
