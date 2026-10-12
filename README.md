@@ -39,7 +39,7 @@ main loop:
 Things to decide early:
 
 - Timer1 source: LFINTOSC (~31 kHz internal; the board has no 32.768 kHz crystal). Async mode so it counts in sleep.
-- LCD: check with the lab if it is 4-bit parallel or I2C backpack.
+- LCD: 16x2 HD44780 with a PCF8574 I2C backpack. It shares the I2C bus (RC3/RC4) with the TC74, so it needs no extra pins. Address 0x27 (PCF8574T) or 0x3F (PCF8574AT), check the chip.
 - PWM output mapped to RA4 with PPS.
 - PWM uses Timer2. If Timer2 runs from Fosc it stops in sleep, so either don't sleep while TALA is active or clock Timer2 from LFINTOSC.
 - Luminosity: `level = adc >> 7` (10-bit ADC).
@@ -81,7 +81,7 @@ Configured in MCC:
 - ADC (potentiometer)
 - NVM (EEPROM)
 - IOC on RB4 (S1) and RC5 (S2)
-- Pins: LEDs RA4-RA7, LCD
+- Pins: LEDs RA4-RA7 (the LCD is on the I2C bus, no pins of its own)
 - EUSART 9600 (generated, used later)
 
 
@@ -111,7 +111,7 @@ Configured in MCC:
 
 ### C - User interface
 
-- `lcd.c`: HD44780 driver (init, goto, print, cursor on/off). Hand-written (MCC has none), using the MCC pin names.
+- `lcd.c`: HD44780 driver (init, goto, print, cursor on/off) over the PCF8574 I2C backpack, in 4-bit mode, using the MCC I2C driver. Hand-written (MCC has none). Shares the bus with the TC74, so don't call it from an ISR.
 - `buttons.c`: debounce in main loop (~20-50 ms), starting from the MCC IOC callbacks on RB4/RC5.
 - `ui.c`: state machine:
   - NORMAL, S1: clear CTL, show thresholds for 2 s. S1 again within 2 s -> CONFIG.

@@ -79,7 +79,7 @@ void PIN_MANAGER_Initialize(void)
     ANSELx registers
     */
     ANSELD = 0xFF;
-    ANSELC = 0xDF;
+    ANSELC = 0xC7;
     ANSELB = 0xEF;
     ANSELE = 0x07;
     ANSELA = 0xFF;
@@ -91,7 +91,7 @@ void PIN_MANAGER_Initialize(void)
     WPUE = 0x00;
     WPUB = 0x10;
     WPUA = 0x00;
-    WPUC = 0x20;
+    WPUC = 0x38;
 
     /**
     ODx registers
@@ -146,6 +146,11 @@ void PIN_MANAGER_Initialize(void)
     // Enable IOCI interrupt 
     PIE0bits.IOCIE = 1; 
     
+	
+    SSP1CLKPPS = 0x13;   //RC3->MSSP1:SCL1;    
+    RC3PPS = 0x14;   //RC3->MSSP1:SCL1;    
+    RC4PPS = 0x15;   //RC4->MSSP1:SDA1;    
+    SSP1DATPPS = 0x14;   //RC4->MSSP1:SDA1;    
 }
   
 void PIN_MANAGER_IOC(void)

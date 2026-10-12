@@ -43,7 +43,9 @@
 
 #include "mcc_generated_files/mcc.h"
 
-static void tick(void) { LED_5_Toggle(); }
+static void tick(void) { 
+    LED_5_Toggle();
+}
 
 /*
                          Main application

@@ -56,7 +56,11 @@ In **Project Resources**, right-click the module → **Remove** (or click the re
   - A button connects the pin to **GND** when pressed. When it's released, nothing drives the pin, so it would "float" and read random values.
   - The pull-up is an internal resistor to VDD. It holds the pin **high (1) when released**; pressing pulls it **low (0)**.
   - So the buttons are **active low**: pressed = 0.
-  - If the board already has external pull-ups, the internal one is harmless (it's just in parallel).
+  - **This board already has external pull-ups** (Curiosity HPC schematic, sheet 8):
+    - **S1 → RB4:** pull-up **R3 = 10 kΩ** to TVDD, plus **R11 = 1 kΩ** in series to the pin.
+    - **S2 → RC5:** pull-up **R9 = 10 kΩ**, plus **R10 = 1 kΩ** in series.
+    - The 1 kΩ series resistors protect the pin if it's accidentally configured as an output while the button is pressed (that would short it to GND).
+    - So the WPU on RB4/RC5 isn't needed. It's harmless, though: a much weaker resistor in parallel with the 10 kΩ. It can stay on or be turned off.
 - **IOC (interrupt-on-change) on the negative / falling edge:**
   - IOC lets a pin change cause an interrupt, so the main loop doesn't have to poll the buttons. It also **wakes the PIC from sleep**, which we need because the system sleeps when idle.
   - Falling edge = the 1 → 0 transition = **the moment the button is pressed**. Positive edge would be the release. We only care about presses, so negative-only avoids a second interrupt per press.
@@ -75,7 +79,7 @@ In **Project Resources**, right-click the module → **Remove** (or click the re
 
 ### Settings
 - **Clock source: LFINTOSC** (internal ~31 kHz oscillator):
-  - **Why not SOSC:** SOSC needs an external 32.768 kHz crystal, and this board doesn't have one fitted. With no crystal, SOSC simply never oscillates and the clock would never tick.
+  - **Why not SOSC:** SOSC needs an external 32.768 kHz crystal. The Curiosity HPC schematic (Rev 2, sheet 8) has a footprint for it, **Y2** (with capacitors C21/C22), but it's marked **N.M. / DNP** (not mounted). With no crystal, SOSC simply never oscillates and the clock would never tick.
   - **Why LFINTOSC works:** it's built into the chip, needs no parts, and **keeps running during sleep**, which is exactly what the clock needs.
   - **The cost:** it's much less accurate than a crystal. Its frequency can be off by several percent and changes with temperature and voltage, so the clock will drift (a 1 % error is about 14 min per day).
   - **Calibration knob:** at ~31 kHz, 1 s ≈ 31000 counts, so MCC sets the preload to about 65536 − 31000. Measure the real drift against a stopwatch over 10+ minutes. If it's consistently fast or slow, adjust the period/preload value to correct it.
@@ -152,3 +156,149 @@ Without both, the flags get set but the ISR never runs. MCC leaves these lines c
   - I2C lines need pull-up resistors: the TC74 board usually has them, otherwise use the pins' WPU.
 - **Potentiometer (ADC):** ADCC on the potentiometer pin (RA0 on the Curiosity HPC; check the board). Set it as an analog input.
 - **LCD:** the pins depend on the LCD type and how it's wired (4-bit parallel: RS, E, D4-D7; or an I2C backpack, which shares the I2C bus with the TC74). Configure them once the wiring is known.
+
+
+## 8. TC74 (I2C) and potentiometer (ADC) in MCC
+
+### TC74 temperature sensor → MSSP1 as I2C Master
+- **I2C** is a 2-wire bus: **SCL** (clock, driven by the master) and **SDA** (data, both directions). The PIC is the **master**; the TC74 is a **slave** with a fixed 7-bit address (TC74A5 = **0x4D**; the letter/number on the chip says which).
+- The PIC does I2C in hardware with the **MSSP** module (Master Synchronous Serial Port). MSSP1 in "I2C Master" mode generates the clock and the start/stop/ack bits, so the software only gives it bytes.
+- **100 kHz (standard mode):** the TC74 supports up to 100 kHz. With Fosc = 4 MHz the baud register is `SSPADD = 4 MHz / (4 × 100 kHz) − 1 = 9`.
+- **Polled, not interrupt-driven:**
+  - **Polled:** the driver starts each step (start bit, send byte, read byte, stop) and then **waits in a loop** until the MSSP hardware sets its "done" flag. The function returns only when the whole transfer is finished. It's simple, the order of operations is obvious, and it's easy to debug.
+  - **Interrupt-driven:** the driver starts the transfer and returns immediately. Every finished step causes an MSSP interrupt, and the ISR runs a state machine that starts the next step. The CPU is free during the transfer, but the code is more complex: a state machine inside an ISR, an extra interrupt source in the cyclic executive, and the caller has to check later whether the result is ready.
+  - **Why polled is enough here:**
+    - A TC74 read is about 4 bytes ≈ 40 bits ≈ **0.4 ms** at 100 kHz.
+    - It happens once every PMON seconds (≥ 1 s).
+    - Blocking 0.4 ms once per second is **< 0.05 %** of the CPU time, and far shorter than the 1 s tick, so no deadline is missed and the clock still updates on time (the Timer1 interrupt still interrupts the wait).
+    - It also matches the cyclic executive design: ISRs stay minimal (only the clock and buttons), and all work happens in the main loop.
+  - **When interrupt-driven would be worth it:** long or frequent transfers (e.g. many bytes, 400 kHz streams), or when the main loop has tight timing that 0.4 ms would break. Neither applies here.
+  - **Risk to know:** if the bus is broken (no pull-ups, sensor unplugged, SCL stuck low), a polled driver can wait forever on a flag that never comes, and the main loop freezes. If the system "hangs" when reading the sensor, check the wiring and pull-ups first.
+- **Slew rate: "Standard speed (100 kHz)":**
+  - **Slew rate** = how fast a pin's voltage rises or falls on each edge.
+  - MSSP has a **slew rate control** setting (the `SMP` bit in `SSP1STAT`). When enabled, it slows the edges down on purpose.
+  - The I2C spec requires that only for **Fast mode (400 kHz)**: there, the edges are close together, and slowed edges reduce ringing, glitches and interference.
+  - At **100 kHz (standard mode)**, slew rate control isn't needed. The datasheet says to **disable** it for 100 kHz (and 1 MHz); "Standard speed" in MCC does exactly that (`SMP = 1`).
+  - The rule: the slew-rate setting must match the bus speed. Since we chose 100 kHz (the TC74's maximum), we choose standard speed.
+- **Decision: WPU on RC3 (SCL) and RC4 (SDA).**
+  - We only have the Curiosity HPC, the TC74 and the display. No external resistors are allowed, and neither the board nor the TC74 has I2C pull-ups.
+  - The PIC's internal weak pull-ups are therefore the only option. Their rise time is slower than the I2C spec (see above), but with short wires and only one or two devices on the bus, it normally works.
+  - **If reads fail or come back wrong (e.g. 0xFF or a hang):**
+    1. Check the wiring and that the address is 0x4D.
+    2. **Lower the I2C clock** in MCC (e.g. 100 kHz → 50 kHz or less). A slower clock gives each slowly-rising edge more time, so the weak pull-ups are enough. This is the tuning knob: the TC74 doesn't need speed (one byte every PMON seconds).
+    3. Keep the wires to the TC74 short.
+  - **Update: the display does have an I2C backpack** (see section 9). These modules usually have SDA/SCL pull-ups on board, and since the bus is shared, they would serve the TC74 too. Until that's checked, keep WPU on; it's harmless in parallel.
+- **Pins, via PPS:** on this PIC, peripheral pins can be moved (Peripheral Pin Select).
+  - We use **RC3 = SCL1, RC4 = SDA1**, the I2C pins of mikroBUS 1 on the Curiosity HPC (and the MSSP1 defaults).
+  - I2C needs **both** an input and an output mapping on each pin, because the module drives and reads the same wire. MCC sets both.
+- **Pull-ups:**
+  - I2C lines are **open-drain**: devices only pull the line low; a resistor pulls it high.
+  - Without pull-ups, the bus stays low and nothing works.
+  - **The Curiosity HPC has no I2C pull-ups.** In the schematic (sheet 8), RC3/RC4 go to the mikroBUS SCL/SDA pins only through solder-blob jumpers **J36/J37** (module 1) and **J42/J43** (module 2), with no resistors to VDD and no footprint for them.
+  - **The TC74 chip has no internal pull-ups.** They have to come from the board it's mounted on, from external resistors, or from the PIC's WPU.
+  - **How to check whether there are pull-ups (multimeter):**
+    - **Board unpowered, resistance mode:** measure between SDA and VDD (3.3 V/5 V pin), then between SCL and VDD.
+      - A few kΩ (typically 2.2k, 4.7k or 10k) → there's a pull-up.
+      - Open (OL) or MΩ → there's none.
+    - **Board powered, PIC held in reset or not driving the pins, voltage mode:** measure SDA and SCL to GND.
+      - Steady ≈ VDD → there's a pull-up.
+      - ≈ 0 V or a wandering value → there's none (the line is floating).
+      - In reset, all pins are inputs with WPU off, so the reading shows only the external parts.
+    - **Or look at it:** small resistors on the TC74 board between each line and VDD, or check its schematic.
+  - **What to do with the result:**
+    - **External pull-ups present:** WPU can stay off. Turning it on doesn't hurt: it's just a much weaker resistor in parallel, which changes almost nothing.
+    - **No pull-ups:** the proper fix is **4.7 kΩ from SDA to VDD and 4.7 kΩ from SCL to VDD**. The PIC's WPU is a fallback. It's weak (≈140 µA → roughly 25-35 kΩ), so the edges rise slowly: R·C with ~50 pF of wires gives ~1.5 µs, while standard mode allows max 1 µs rise time. It's out of spec but often works with short wires. If the reads fail or are flaky, add the real resistors.
+- **Generated API:**
+  - `I2C1_Open/Close` etc. are generated in `i2c1_master.c`.
+  - MCC also generates an example file with `I2C1_Read1ByteRegister(address, reg)`.
+  - Reading the TC74 temperature is `I2C1_Read1ByteRegister(0x4D, 0x00)`: register 0x00 = TEMP, in °C, signed 8-bit.
+  - This is B's part (`tc74.c`).
+
+### Potentiometer → ADCC
+- **ADCC** = "ADC with Computation", the PIC16F18875's **10-bit** ADC. It converts a voltage between VSS (0 V) and VDD into 0-1023.
+- The potentiometer on the Curiosity HPC is on **RA0** (analog channel ANA0). Confirmed in the schematic (sheet 8): **R1 = 10 kΩ pot** between TVDD and GND, its wiper through **R2 = 1 kΩ** and solder-blob jumper **J3** to RA0. The pin must be **input + analog** (ANSEL = 1). Its pull-up must be **off**, because a pull-up would add current and shift the voltage.
+- **Clock: FRC** (the ADC's own internal RC clock, ADCRC):
+  - Its period is always within the valid ADC timing (TAD), whatever Fosc is, so there's no calculation that could be wrong.
+  - It also lets a conversion run during sleep.
+  - With Fosc/4 at 4 MHz, TAD = 1 µs also works, but it breaks if we ever change Fosc.
+- **References VDD / VSS:** full-scale = the supply voltage, which is the same voltage across the potentiometer. So the reading only depends on the knob position, not on the exact supply voltage.
+- **Right-aligned result:** the 10-bit value sits in the low bits of a 16-bit number (0-1023), so `level = adc >> 7` gives **0-7** (1024 / 8 = 128 per level).
+- **Acquisition time:**
+  - Before converting, the ADC's internal capacitor has to charge to the pin voltage.
+  - The potentiometer is a low-resistance source, so a short time is enough.
+  - A non-zero acquisition count (e.g. 10 ADC clocks) is the safe choice; with 0, the first reading after switching channels can be off.
+  - This is a tuning knob: if readings jump, increase it.
+- **No ADC interrupt:** one conversion takes tens of µs, so waiting for it (`ADCC_GetSingleConversion(channel)`) is simpler than an interrupt.
+- **Generated API:** `ADCC_GetSingleConversion(<channel>)` in `adcc.h`. The channel name comes from the pin's custom name (`POT`). This is B's part (`adc.c`).
+
+
+## Reference: Curiosity HPC schematic
+
+Source: Microchip "Curiosity HPC Schematics Rev 2" (DM164136), sheet 8, "mikroBUS and Target PIC Interface".
+
+| What | Connection |
+|---|---|
+| LEDs D2-D5 | RA4-RA7 via jumpers J4-J7, each with a 1 kΩ resistor (R4, R6, R8, R12) |
+| S1 | RB4, 10 kΩ pull-up R3, 1 kΩ series R11, jumper J2 |
+| S2 | RC5, 10 kΩ pull-up R9, 1 kΩ series R10, jumper J1 |
+| S3 | Reset (MCLR/RE3), 10 kΩ pull-up R21 |
+| Potentiometer | R1 10 kΩ, wiper → R2 1 kΩ → J3 → RA0 |
+| 32.768 kHz crystal | Y2 + C21/C22, **not mounted** |
+| mikroBUS 1 I2C | SCL = RC3 (J36), SDA = RC4 (J37), **no pull-ups** |
+| mikroBUS 2 I2C | SCL = RC3 (J42), SDA = RC4 (J43), **no pull-ups** |
+
+"Solder-blob jumpers" (J1-J7 etc.) are pads bridged with solder on the board. If one is cut/open, that pin is disconnected from its LED/button.
+
+
+## 9. The display: 16x2 LCD with an I2C backpack
+
+- **What it is:**
+  - A 16x2 character LCD (QAPASS 1602) with an **HD44780**-compatible controller.
+  - On the back is a black **"MH" backpack** with a **PCF8574** chip, a blue potentiometer and a 4-pin header (GND, VCC, SDA, SCL).
+- **What the backpack does:**
+  - The HD44780 normally needs 6+ wires (RS, E, D4-D7...).
+  - The **PCF8574** is an I2C "I/O expander": it has 8 output pins, and you set them by sending it one byte over I2C. The backpack wires those 8 pins to the LCD (RS, RW, E, backlight, D4-D7).
+  - So we drive the LCD in **4-bit mode** by sending bytes to the PCF8574, using only the two I2C wires.
+- **Consequences for the project:**
+  - **No extra PIC pins for the LCD.** It sits on the **same I2C bus as the TC74** (RC3 = SCL, RC4 = SDA). Two devices with different addresses on the same two wires is normal I2C.
+  - **Address:** **0x27** if the chip is a **PCF8574T**, **0x3F** if it's a **PCF8574AT**. Read the marking on the chip. The TC74 is 0x4D, so there's no conflict.
+  - **Speed:**
+    - Each LCD character needs several I2C bytes (each 4-bit half is sent with E high, then E low), so writing a full line takes a few ms at 100 kHz.
+    - That's fine for refreshing once per second, but only refresh what changed, and never do it from an ISR.
+  - **Shared bus = one user at a time:** the TC74 read and the LCD update must never overlap. They both run from the main loop (never from an ISR), so they're naturally one after the other.
+- **The blue potentiometer** sets the **contrast**. If the LCD shows nothing, or only full black boxes, turn it first. The jumper next to the header switches the **backlight** on and off.
+- **Pull-ups:**
+  - These backpacks usually have SDA/SCL pull-ups on board (small resistors, often marked `472` = 4.7 kΩ or `103` = 10 kΩ, near the header). If so, they serve the TC74 too.
+  - Keeping the PIC's WPU on as well is harmless.
+- **Voltage, important:**
+  - The backpack's pull-ups go to **its own VCC**. If the LCD is powered from **5 V** while the PIC runs at **3.3 V**, SDA/SCL would be pulled to 5 V, above what the PIC pins accept at 3.3 V.
+  - **Power everything (PIC, TC74, LCD) from the same supply.** 5 V is the natural choice, because the LCD needs it for good contrast. The PIC16F18875 (1.8-5.5 V) and the TC74 (2.7-5.5 V) both work at 5 V.
+  - The Curiosity HPC can supply the target with 3.3 V or 5 V (selectable on the board). Check that it's set to 5 V.
+- **MCC:** nothing extra to configure. The LCD uses the MSSP1 I2C driver. `lcd.c` (C's part) is hand-written, because MCC has no HD44780/PCF8574 driver.
+
+
+## 10. What MCC generated for MSSP1 (I2C)
+
+New files: `i2c1_master.c/h` (the driver) and `examples/i2c1_master_example.c/h` (ready-made helpers like `I2C1_Read1ByteRegister()`). `SYSTEM_Initialize()` now also calls `I2C1_Initialize()`.
+
+### Checking the generated values
+- **`SSP1STAT = 0x80`:** bit 7 is `SMP = 1`, meaning slew rate control is **off**, which is right for 100 kHz standard mode (section 8).
+- **`SSP1CON1 = 0x08`:**
+  - `SSPM = 1000` → I2C Master mode, clock = Fosc / (4 × (SSP1ADD + 1)).
+  - `SSPEN` is 0 here. The driver turns the module on when a transfer starts (`I2C1_Open`) and off again at the end.
+- **`SSP1ADD = 0x09`:** 4 MHz / (4 × 10) = **100 kHz**.
+- **Pins:**
+  - `ANSELC = 0xC7`: bits 3, 4, 5 = 0, so RC3, RC4 (I2C) and RC5 (S2) are digital.
+  - `WPUC = 0x38`: pull-ups on RC3, RC4, RC5. These are the I2C pull-ups decided in section 8.
+  - `TRISC` stays all inputs. For I2C that's correct: the MSSP takes over the pins and drives them open-drain itself.
+- **PPS:** each I2C pin is mapped both ways (section 8).
+  - `RC3PPS = 0x14` (output: SCL1 on RC3) and `SSP1CLKPPS = 0x13` (input: SCL1 read from RC3).
+  - `RC4PPS = 0x15` (output: SDA1 on RC4) and `SSP1DATPPS = 0x14` (input: SDA1 read from RC4).
+  - Input PPS values encode the pin as port (A = 0, B = 1, C = 2) × 8 + pin number, so RC3 = 2·8 + 3 = 19 = 0x13 and RC4 = 0x14.
+- **Interrupts:** `interrupt_manager.c` is unchanged, so the driver is the **polled** version, as chosen.
+
+### The hang risk, confirmed in the generated code
+- The polled driver waits for each I2C step with `while(1) { if (PIR3bits.SSP1IF) break; }`, which has **no timeout**. The `time_out` fields in the driver are only used by the interrupt version.
+- The example helpers also loop `while (I2C1_BUSY == I2C1_Open(address));`.
+- So if the bus is broken (TC74/LCD unplugged, no pull-ups, SDA or SCL stuck low), the main loop **freezes inside the I2C call**. The Timer1 ISR still runs, so the seconds keep counting, but nothing else happens (no LCD refresh, no buttons).
+- **Debugging rule:** if the program "stops" at the first sensor read or LCD write, suspect the I2C wiring/pull-ups/address first, not the logic.
