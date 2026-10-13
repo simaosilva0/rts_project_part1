@@ -44,6 +44,7 @@
 #include "mcc_generated_files/mcc.h"
 
 #include "clock.h"
+#include "power.h"
 #include "system.h"
 
 clock_time_t now;
@@ -77,6 +78,7 @@ void main(void) {
   SYSTEM_Initialize();
   
   clock_init(0, 0);
+  power_init();
 
   // Add handler registration
   TMR1_SetInterruptHandler(tick);
@@ -114,6 +116,7 @@ void main(void) {
         s2_pressed = 0;
         LED_4_Toggle();
     }
+    power_sleep_if_idle();
   }
 }
 /**

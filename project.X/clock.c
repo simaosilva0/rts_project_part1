@@ -1,6 +1,6 @@
 /*
  * File:   clock.c
- * Author: root
+ * Author: simaosilva
  *
  * Created on October 13, 2026, 12:08 PM
  */

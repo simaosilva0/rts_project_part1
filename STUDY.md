@@ -569,3 +569,51 @@ There are two delays, and they add up:
 - **Bounce:** a mechanical button bounces, so one press can make several falling edges in a few ms, i.e. several interrupts. The flag is just set to 1 again, so it doesn't pile up, but if the main loop handles the flag between two bounces, **one press can count twice**. That's what **debouncing** fixes: after a press, ignore that button for ~20-50 ms. Debouncing is C's job (`buttons.c`). The raw flags are the input it starts from.
 - **Temporary test:** toggling D3 on S1 and D4 on S2 proves the whole chain works. If a LED sometimes toggles twice on one press, you're seeing bounce. It's a useful thing to see before C writes the debounce, and a good point for the report.
 - **Later:** IOC also **wakes the PIC from sleep**, so a button press will work even while the system sleeps (`power.c`).
+
+
+## 18. `power.c`: sleeping when there's nothing to do
+
+- **Goal (energy requirement):** the CPU runs only when there's work. Otherwise `SLEEP()`: the CPU clock (HFINTOSC 4 MHz) stops, and current drops from ~mA to µA. Things that keep running in sleep:
+  - Timer1 (LFINTOSC, async, section 5);
+  - IOC on the buttons;
+  - Timer2/PWM6 when running (LFINTOSC, section 12).
+- **What wakes the CPU:** any interrupt whose **enable bit** is set: the Timer1 overflow every second (`TMR1IE`) and a button press (`IOCIE`). After waking, execution continues right after `SLEEP()`.
+- **What blocks sleep (`busy()`):** work the main loop hasn't handled yet: `ticks > 0`, `s1_pressed`, `s2_pressed`. Later modules may add more, e.g. a debounce in progress.
+- **The race, and why GIE is turned off around the check:**
+  - Without protection: the main loop checks "no work", then **an interrupt sets a flag**, then `SLEEP()` runs. The CPU sleeps with work pending, and the press is only handled at the next wake-up (up to 1 s late).
+  - **With `GIE = 0` first:** interrupts can't run the ISR between the check and `SLEEP()`. But on this PIC, an interrupt **still wakes the CPU** when GIE = 0 (only the enable bit matters for waking). And if a flag is already set when `SLEEP()` executes, `SLEEP()` behaves like a `NOP` and doesn't sleep at all.
+  - After `SLEEP()`: `NOP()` (recommended after SLEEP, the instruction right after it is pre-fetched), then `GIE = 1`. The pending interrupt is serviced immediately, the flag gets set, and the main loop handles it on the next pass.
+  - So nothing can be missed. The check and the sleep act as one indivisible step.
+- **`VREGPM = 1` (in `power_init()`):**
+  - The PIC16F18875 ("F" version) has an internal voltage regulator. `VREGCON.VREGPM = 1` puts it in **low-power mode during sleep**, which lowers the sleep current considerably.
+  - **Trade-off:** waking up takes a bit longer (the regulator has to come back to full power). That's microseconds, irrelevant for a 1 s tick and human button presses.
+- **What's already low-power without extra code:** unused pins are left **analog** (`ANSEL = 1`, MCC's default), which disconnects their digital input buffers, so floating unused pins don't draw current.
+- **Possible further savings (knobs for the report):**
+  - turning the ADC off between readings (section 11);
+  - disabling unused modules with the `PMD` registers;
+  - the TC74's standby mode between readings (B).
+- **Debugging note:** sleep behaves differently under the debugger. Test it with **Make and Program Device**, not Debug.
+- **How to measure the gain (for the report):**
+  - Measure the board current with `power_sleep_if_idle()` and without it (comment it out).
+  - The onboard debugger also draws current, so measure the **difference**, or measure the target supply alone if possible.
+  - Write both numbers down (README test list).
+
+
+## 19. Debouncing the buttons: options
+
+**The problem:** a press (and also a **release**) makes the contact bounce for a few ms. Each bounce is a falling edge, so it triggers IOC. Release bounce matters too: the contact opening can jitter low→high→low, and every high→low is a falling edge, so even releasing the button can count as a press.
+
+| Option | How | Verdict |
+|---|---|---|
+| Delay in the ISR | `__delay_ms(30)` inside the IOC callback | **No.** It blocks every other interrupt (the Timer1 tick too) and breaks the "no delays in ISRs" rule. |
+| Delay in the main loop | after handling a press: `__delay_ms(30)`, then clear the flag again to discard the bounces | **Works and is simple, but it's blocking.** The main loop does nothing for 30 ms. The clock is safe (`ticks` accumulates), but it breaks "all tasks short and non-blocking", which matters once the USART needs servicing about every 1 ms (part 2). OK as a temporary test only. |
+| Hardware RC filter | a capacitor on the button line | Not possible: no extra parts allowed, and the board has no capacitor there (only 10 kΩ pull-up + 1 kΩ series, section 4). |
+| **Non-blocking lockout with a timer** | on a press, accept it, then **ignore that button for ~30-50 ms** (turn off its IOC or ignore its flag); a timer ends the lockout. After it ends, only accept a new press if the pin reads **high** (released). | **Best.** No waiting anywhere, and the CPU can even sleep during the lockout. |
+
+**Implementing the lockout:**
+- It needs a **ms time base**. Timer1 only ticks every 1 s, too coarse.
+- **Timer0** is free. Clocked from **LFINTOSC**, it keeps running in sleep, so it can wake the CPU when the lockout ends, and the system still sleeps while waiting.
+- One-shot use: start it on a press, and its interrupt ends the lockout.
+- 30-50 ms: long enough for typical bounce (< 10-20 ms), short enough that a human double-press still works.
+
+**Ownership:** debouncing is part of C's `buttons.c` (README). The raw flags in `main.c` are A's part, and they're what C's debounce starts from.
