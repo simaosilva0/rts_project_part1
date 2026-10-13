@@ -357,3 +357,96 @@ Like the I2C driver, this is a polled wait. Unlike I2C, it can't hang: the ADC a
 - `ADON` stays **1** after init and after each reading, so the ADC module stays powered between readings. The idle current is small, but it isn't zero.
 - Since `ADCC_GetSingleConversion()` sets `ADON = 1` itself, the code can turn it off after reading (`ADCON0bits.ADON = 0;`) with no other change.
 - That's a possible energy-saving step: measure the current with and without it.
+
+
+## 12. The remaining peripherals: EEPROM, PWM, EUSART
+
+### EEPROM → Memory module
+- **What it is:** the PIC16F18875 has **256 bytes of data EEPROM**. It's non-volatile (it keeps its content without power), so it's where the config block and the max/min records live (README, EEPROM layout).
+- **MCC:** the **Memory** module with **"Add DataEE Routines"** ticked generates `DATAEE_WriteByte(addr, data)` and `DATAEE_ReadByte(addr)`. No interrupts.
+- **Address note:** on this PIC, EEPROM is mapped at **0xF000-0xF0FF** in the NVM address space. Check in `memory.h` whether the generated functions take the full address (0xF000 + offset) or just the offset (0-255), and use README offsets accordingly.
+- **Write time and interrupts:**
+  - One byte takes about **4-5 ms** to write.
+  - The MCC routine disables interrupts (GIE = 0) for the unlock sequence (`0x55`, `0xAA`, `WR = 1`) and **waits until the write is done**, with interrupts still off.
+  - The unlock sequence must not be interrupted, or the write is refused. That's a hardware safety feature against accidental writes.
+  - **Consequence:** during each byte write (~4 ms), the Timer1 and button ISRs are delayed. The Timer1 *counter* keeps running in hardware and the overflow flag stays set, so the ISR runs as soon as interrupts come back. **No second is lost**, just served a few ms late.
+  - Saving the 12-byte config block blocks for ~50 ms. That's acceptable when it happens rarely (on config change, once per minute for CLKM), but it's another reason to write only bytes that changed.
+- **Wear:** each EEPROM cell survives about 100k writes (README note about CLKM).
+
+### PWM on LED D2 → TMR2 + PWM6
+- **What PWM is:** a square wave with a fixed period and a variable **duty cycle** (% of the time high). On an LED, a fast PWM looks like a steady light whose brightness is the duty cycle. This is the alarm indication: D2 lights up via PWM for TALA seconds.
+- **Why PWM6 (not CCP):** the PIC16F18875 has dedicated 10-bit PWM modules (**PWM6, PWM7**) and CCP modules that can also do PWM. PWM6 is the simplest: no capture/compare modes to configure. It needs a timer for its period, which is **Timer2**.
+- **Timer2 clock: LFINTOSC.** This is the important decision:
+  - If Timer2 ran from Fosc/4, it would **stop in sleep** (like synchronized Timer1, section 5). Then during the TALA seconds the system couldn't sleep, or the LED would freeze.
+  - On this PIC, Timer2 can be clocked from **LFINTOSC**, which keeps running in sleep, so the **PWM keeps going while the CPU sleeps**. That saves energy during alarms, and the main loop doesn't need a special case.
+  - To confirm on the hardware: start an alarm, check that D2 keeps lighting while the system is asleep.
+- **Period:** LFINTOSC ≈ 31 kHz, prescaler 1:1, period register PR2 = 255 → 31000 / 256 ≈ **121 Hz** (~8.3 ms).
+  - Above ~100 Hz, the eye doesn't see flicker, so it looks like a steady light.
+  - PR2 = 255 gives the full duty resolution.
+  - **How MCC shows it ("Timer Period" field):** MCC asks for the period as a *time*, not as PR2, and computes PR2 itself.
+    - **Formula:** period = (PR2 + 1) × prescaler × T_clk, with T_clk = 1 / 31 kHz = **32.258 µs** (one LFINTOSC tick).
+    - The range shown is **32.258 µs ≤ period ≤ 8.258065 ms**:
+      - minimum = PR2 = 0 → 1 tick = 32.258 µs;
+      - maximum = PR2 = 255 → 256 ticks = 256 × 32.258 µs = **8.258 ms**.
+    - "8.3 ms" is just above the maximum, so MCC clamps it to 8.258065 ms. The "Actual Period" is 8.258 ms, which means PR2 = 255, as intended. Entering 8.258065 ms directly gives the same result.
+    - Real frequency = 1 / 8.258 ms ≈ **121 Hz**. That's computed with LFINTOSC = exactly 31 kHz; the real LFINTOSC varies by a few %, so the real PWM frequency does too. That's irrelevant for an LED.
+    - A longer period would need a bigger prescaler (1:2 → max 16.5 ms ≈ 60 Hz). But below ~100 Hz the LED starts to flicker visibly, so 1:1 with the maximum period is the right choice.
+- **Duty 50%:** a clearly visible, medium-bright light. Changing it is one call (`PWM6_LoadDutyValue()`), which is a knob if the alarm should look brighter or dimmer.
+- **Off at startup:**
+  - PWM6 **not enabled** and Timer2 **not started** after init, so D2 stays dark until an alarm.
+  - The alarm code (B's `alarm_out.c`) starts Timer2 / enables PWM6 for TALA seconds, then stops them.
+  - Timer2 not running = no current wasted.
+- **Pin:**
+  - In the Pin Manager, **PWM6OUT → RA4** (D2) through PPS. The PPS mapping makes the PWM drive the pin instead of `LATA4`.
+  - RA4 stays an output.
+
+### EUSART (USART) at 9600 baud
+- **What it is:** the serial port (asynchronous: TX and RX lines, no clock line). The project adds communication over it later (part 2). For now we only configure it, so the pins and the baud rate are fixed early.
+- **Pins:** **TX = RC6, RX = RC7** (the EUSART defaults, and the mikroBUS 1 TX/RX lines, through 330 Ω resistors R39/R40 on the board).
+- **9600 baud at 4 MHz:**
+  - With BRG16 = 1 and BRGH = 1: SPBRG = 4 MHz / (4 × 9600) − 1 ≈ 103 → real baud 9615, **0.16 % error**. UART tolerates about ±2 %, so this is fine.
+  - Check the error % that MCC shows.
+- **Settings:**
+  - 8 data bits, no parity, 1 stop bit (8N1, the standard).
+  - Transmit and receive enabled.
+  - **Interrupts off** for now (decided when part 2 is designed).
+  - **No "Redirect STDIO"** (printf), because it costs code space we may need.
+- **Timing (README):** 9600 baud ≈ 1 ms per byte. That's why every task must stay short and non-blocking: later, the USART will need servicing about every ms.
+
+
+## 13. What MCC generated for EEPROM, PWM and EUSART
+
+New files: `memory.c/h`, `tmr2.c/h`, `pwm6.c/h`, `eusart.c/h`. `SYSTEM_Initialize()` now also calls `PWM6_Initialize()`, `TMR2_Initialize()`, `EUSART_Initialize()`. `interrupt_manager.c` is unchanged, so none of these use interrupts.
+
+### EEPROM (`memory.c`)
+- `DATAEE_WriteByte(uint16_t addr, uint8_t data)` and `DATAEE_ReadByte(uint16_t addr)` take the **full address**: EEPROM byte n is at **0xF000 + n**. The README layout lists offsets, so e.g. the magic word (offset 0) is at 0xF000, and the records (offset 16) start at 0xF010.
+- `NVMREGS = 1` selects the EEPROM/config space (not program flash).
+- **The write confirms section 12:** GIE = 0, unlock `0x55`/`0xAA`, `WR = 1`, then `while (NVMCON1bits.WR)` waits ~4-5 ms **with interrupts off**, then GIE is restored. Reading is instant (two NOPs).
+
+### Timer2 (`tmr2.c`)
+- `T2CLKCON = 0x04` → **LFINTOSC**.
+- `T2PR = 0xFF` → PR2 = 255 → 8.258 ms ≈ 121 Hz.
+- `T2CON = 0x00` → prescaler 1:1, postscaler 1:1, **TMR2ON off** (stopped until an alarm).
+- `T2HLT = 0x00`:
+  - Software control (free-running, no external start/reset).
+  - Prescaler **not synchronized** to Fosc. That matters for sleep, same reason as Timer1 (section 5): a synchronized prescaler would stop when Fosc stops.
+
+### PWM6 (`pwm6.c`)
+- `PWM6CON = 0x00` → **PWM6EN disabled**, active-high.
+- `CCPTMRS1bits.P6TSEL = 1` → PWM6 uses **Timer2**.
+- **Duty:**
+  - `PWM6DCH = 0x7F`, `PWM6DCL = 0xC0`, so duty value = (0x7F << 2) | (0xC0 >> 6) = 508 + 3 = **511**.
+  - The full scale is 4 × (PR2 + 1) = 1024, so 511 / 1024 ≈ **50 %**.
+  - `PWM6_LoadDutyValue(0..1023)` changes it.
+- **Pin:** `RA4PPS = 0x0E` → RA4 outputs PWM6OUT (D2). While PWM6 is disabled its output is low, so D2 stays off. That's why D2 is dark and D5 still blinks.
+- **Turning the alarm light on/off later:** `TMR2_Start(); PWM6CONbits.PWM6EN = 1;` and `PWM6CONbits.PWM6EN = 0; TMR2_Stop();`.
+
+### EUSART (`eusart.c`)
+- `BAUD1CON = 0x08` → BRG16 = 1 (16-bit baud generator).
+- `TX1STA = 0x24` → TXEN on, asynchronous, BRGH = 1 (high speed).
+- `RC1STA = 0x90` → SPEN (serial port on), CREN (receive on), 8 bits.
+- `SP1BRG = 103` → 4 MHz / (4 × 104) = **9615 baud** (0.16 % error).
+- **Pins:**
+  - `RC6PPS = 0x10` → TX on RC6. `TRISC = 0xBF` → RC6 is an output.
+  - `RXPPS = 0x17` → RX read from RC7, which is digital (`ANSELC` bit 7 = 0) and an input.
+- Error handlers are only defaults; nothing is called by interrupts.

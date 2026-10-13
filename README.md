@@ -45,7 +45,7 @@ Things to decide early:
 - Luminosity: `level = adc >> 7` (10-bit ADC).
 - USART at 9600 baud will be added later (~1 ms per byte). Keep all tasks short and non-blocking.
 
-EEPROM layout:
+EEPROM layout (addresses are offsets: the MCC functions `DATAEE_WriteByte/ReadByte` take the full address, `0xF000 + offset`):
 
 | Address | Content |
 |---|---|
