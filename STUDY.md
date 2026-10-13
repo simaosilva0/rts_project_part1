@@ -651,3 +651,50 @@ There are two delays, and they add up:
   - The ISR doesn't reload anything, so `TMR0_WriteTimer(0)` before `TMR0_StartTimer()` makes the first period a full 40 ms.
 - **Second try (after unticking "Enable Synchronization"):** `T0CON1 = 0x93`, so `T0ASYNC = 1` and Timer0 now runs in sleep. The rest is unchanged (40 ms, interrupt enabled, timer off at start). The project builds (745 words, 9.1 %).
 - **Note:** generating Timer0 alone doesn't debounce anything yet. Timer0 stays off until `buttons.c` starts it on a press. Any change in how often the bounce shows up before that is chance: bounce depends on how the button is pressed.
+
+
+## 20. Hardware stack depth (found on the `silveira/partC` branch)
+
+- **The warning:** `(1393) possible hardware stack overflow detected; estimated stack depth: 18`, from building master + the LCD branch.
+- **What it means:**
+  - The PIC16F18875 keeps return addresses in a **hardware stack of only 16 levels**. Every function call uses one level, and an interrupt uses one more on top of whatever main was doing.
+  - The compiler estimates that the deepest chain (main → … → LCD → I2C driver functions, plus an interrupt arriving at the deepest point) needs 18.
+  - If that really happens, the oldest return address is overwritten, and the program returns to the wrong place (a crash or reset; `STVREN = ON` makes a stack overflow cause a reset).
+- **Why it can happen here:** the MCC I2C driver is several calls deep (the example helpers → `I2C1_Open`/`I2C1_MasterOperation` → the state machine → its state functions), and the LCD code adds its own levels on top.
+- **Fixes, if it stays:**
+  - Fewer nested calls in the LCD path, e.g. one function that sends a byte directly instead of `lcd_putc` → `write_byte` → `write_nibble` → I2C helper → driver.
+  - Or call the I2C driver one level less deep.
+  - The compiler's call graph (in the `.map`/listing) shows the exact chain.
+- **Status:** it only appears with the LCD branch. Master alone builds without it.
+
+
+## 21. `buttons.c` in detail
+
+- **What moved where:** the two press callbacks (`s1_isr`, `s2_isr`) and their registration moved from `main.c` to `buttons.c`. `main.c` only calls `buttons_init()`. The main loop is unchanged: it still consumes `s1_pressed`/`s2_pressed` (it doesn't care how they're produced).
+- **State:**
+  - `locked`: 1 while presses are ignored.
+  - `stable`: how many Timer0 periods in a row both buttons have read high.
+  - They're `static`, so private to `buttons.c`.
+  - **Not `volatile`:** they're only read and written inside ISRs. On a PIC16, interrupts can't interrupt each other (one priority level), so the IOC and Timer0 callbacks never run at the same time, and the main loop never touches these variables. `volatile` is only needed for data shared between ISR and main loop.
+- **`lock()`:**
+  - `TMR0_WriteTimer(0)` resets the count, so the first check is a full 40 ms after the press.
+  - `TMR0_StartTimer()` turns it on.
+- **`tmr0_isr()`, every 40 ms while locked:**
+  - Pins are active low (section 4): `SW1_GetValue() == 0` means pressed.
+  - If either is pressed, the button is still held or bouncing, so `stable = 0`.
+  - Otherwise `++stable`. At `STABLE_PERIODS` (2), Timer0 stops and `locked = 0`.
+- **Timing:**
+  - A short tap is locked for about 80 ms after release.
+  - A held button stays locked as long as it's held, plus about 80 ms.
+  - So a real second press needs a gap of more than ~80 ms, which is far faster than the UI needs (its windows are 1-2 s).
+- **Why `STABLE_PERIODS` is in `buttons.c`, not `system.h`:**
+  - `system.h` is the **shared contract**: only things more than one module uses (shared data, alarm bits, record indexes).
+  - `STABLE_PERIODS` is used only inside `buttons.c`. It's an internal detail of how debouncing works.
+  - Keeping it local means changing it touches one file, needs no announcement to the group (the `system.h` rule), and recompiles only `buttons.c`.
+  - **The general rule:** put a constant next to its only user. Move it to a header only when a second module needs it.
+- **Knobs:**
+  - `STABLE_PERIODS` (how many quiet periods);
+  - the Timer0 period in MCC (40 ms).
+  - If a bounce still slips through, raise either one.
+- **Sleep:** Timer0 is asynchronous on LFINTOSC, so the lockout ends even while the CPU sleeps. Nothing in `power.c` has to change.
+- **Stack:** the deepest new chain is ISR → `PIN_MANAGER_IOC` → `IOCBF4_ISR` → `s1_isr` → `lock` → `TMR0_WriteTimer`, a few levels. The build shows no stack warning (820 words, 10 %).

@@ -43,6 +43,7 @@
 
 #include "mcc_generated_files/mcc.h"
 
+#include "buttons.h"
 #include "clock.h"
 #include "power.h"
 #include "system.h"
@@ -62,14 +63,6 @@ static void tick(void) {
     ticks++;
 }
 
-static void s1_isr(void) {
-    s1_pressed = 1;
-}
-
-static void s2_isr(void) {
-    s2_pressed = 1;
-}
-
 /*
                          Main application
  */
@@ -82,8 +75,8 @@ void main(void) {
 
   // Add handler registration
   TMR1_SetInterruptHandler(tick);
-  IOCBF4_SetInterruptHandler(s1_isr);
-  IOCCF5_SetInterruptHandler(s2_isr);
+  
+  buttons_init();
 
   // When using interrupts, you need to set the Global and Peripheral Interrupt
   // Enable bits Use the following macros to:

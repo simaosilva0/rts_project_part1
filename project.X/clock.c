@@ -1,11 +1,3 @@
-/*
- * File:   clock.c
- * Author: simaosilva
- *
- * Created on October 13, 2026, 12:08 PM
- */
-
-
 #include "system.h"
 #include "clock.h"
 

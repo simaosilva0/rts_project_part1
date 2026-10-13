@@ -1,11 +1,3 @@
-/*
- * File:   power.c
- * Author: simaosilva
- *
- * Created on October 13, 2026, 6:01 PM
- */
-
-
 #include <xc.h>
 #include "system.h"
 #include "power.h"
