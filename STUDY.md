@@ -217,16 +217,34 @@ Without both, the flags get set but the ISR never runs. MCC leaves these lines c
 ### Potentiometer → ADCC
 - **ADCC** = "ADC with Computation", the PIC16F18875's **10-bit** ADC. It converts a voltage between VSS (0 V) and VDD into 0-1023.
 - The potentiometer on the Curiosity HPC is on **RA0** (analog channel ANA0). Confirmed in the schematic (sheet 8): **R1 = 10 kΩ pot** between TVDD and GND, its wiper through **R2 = 1 kΩ** and solder-blob jumper **J3** to RA0. The pin must be **input + analog** (ANSEL = 1). Its pull-up must be **off**, because a pull-up would add current and shift the voltage.
-- **Clock: FRC** (the ADC's own internal RC clock, ADCRC):
-  - Its period is always within the valid ADC timing (TAD), whatever Fosc is, so there's no calculation that could be wrong.
-  - It also lets a conversion run during sleep.
-  - With Fosc/4 at 4 MHz, TAD = 1 µs also works, but it breaks if we ever change Fosc.
+- **Operating mode: Basic_mode:**
+  - The ADCC ("with Computation") can do extra work in hardware after each conversion:
+    - **Accumulate:** add up several results.
+    - **Average / Burst Average:** take N conversions and divide.
+    - **Low-pass filter:** smooth the value over time.
+    - **Threshold compare:** interrupt when the value crosses a limit.
+  - **Basic** = plain single conversions: one start, one result, no extra computation.
+  - We only need **8 levels** (128 ADC counts per level). The noise on the pot reading is a few counts, much smaller than one level, so averaging or filtering adds configuration for no visible benefit.
+  - **Known limit:** when the knob sits exactly on a level boundary, the level could flicker between two values (e.g. 3 ↔ 4) from one reading to the next. If that ever matters, switch to Average mode (e.g. 4-16 samples) or add hysteresis in software.
+- **Clock: FOSC/8** (the CPU clock divided by 8):
+  - The ADC converts one bit per clock period, called **TAD**. For this PIC, TAD must be between **1 µs and 9 µs** (datasheet). Faster, and the result is wrong; slower, and the capacitor leaks during the conversion.
+  - The first idea was **FRC** (the ADC's own RC clock): always a valid TAD whatever the CPU speed, and it works in sleep. But MCC Classic only offered **FOSC with a divider** for this module, so we pick the divider ourselves.
+  - With Fosc = 4 MHz:
+    - FOSC/4 → TAD = 1 µs (exactly the minimum, no margin).
+    - **FOSC/8 → TAD = 2 µs** (safely inside 1-9 µs).
+    - FOSC/16 → 4 µs (also fine, just slower).
+  - **FOSC/8** is the fastest choice with margin. A 10-bit conversion takes about 12 TAD ≈ **24 µs**.
+  - **What we lose compared to FRC:**
+    - The ADC can't convert during sleep. That doesn't matter: we read the pot while awake, in the main loop.
+    - **If Fosc ever changes, the divider must be recalculated**: TAD = divider / Fosc, which must stay within 1-9 µs. For example, at 32 MHz FOSC/8 = 0.25 µs is too fast, and you'd need FOSC/32 or FOSC/64.
 - **References VDD / VSS:** full-scale = the supply voltage, which is the same voltage across the potentiometer. So the reading only depends on the knob position, not on the exact supply voltage.
 - **Right-aligned result:** the 10-bit value sits in the low bits of a 16-bit number (0-1023), so `level = adc >> 7` gives **0-7** (1024 / 8 = 128 per level).
 - **Acquisition time:**
   - Before converting, the ADC's internal capacitor has to charge to the pin voltage.
   - The potentiometer is a low-resistance source, so a short time is enough.
-  - A non-zero acquisition count (e.g. 10 ADC clocks) is the safe choice; with 0, the first reading after switching channels can be off.
+  - Our source resistance: the pot wiper is at most ~2.5 kΩ (10 kΩ pot in the middle), plus **R2 = 1 kΩ** in series, so about 3.5 kΩ. With that, the capacitor needs only a few µs to charge (datasheet acquisition formula).
+  - **Acquisition count = 10** means 10 ADC clock periods (TAD) before the conversion starts. With TAD = 2 µs, that's **20 µs**: several times the few µs needed, so the reading is always settled, and the cost is negligible since we read once every PMON seconds.
+  - With 0, the conversion would start immediately, and the first reading after switching channels can be off.
   - This is a tuning knob: if readings jump, increase it.
 - **No ADC interrupt:** one conversion takes tens of µs, so waiting for it (`ADCC_GetSingleConversion(channel)`) is simpler than an interrupt.
 - **Generated API:** `ADCC_GetSingleConversion(<channel>)` in `adcc.h`. The channel name comes from the pin's custom name (`POT`). This is B's part (`adc.c`).
@@ -302,3 +320,40 @@ New files: `i2c1_master.c/h` (the driver) and `examples/i2c1_master_example.c/h`
 - The example helpers also loop `while (I2C1_BUSY == I2C1_Open(address));`.
 - So if the bus is broken (TC74/LCD unplugged, no pull-ups, SDA or SCL stuck low), the main loop **freezes inside the I2C call**. The Timer1 ISR still runs, so the seconds keep counting, but nothing else happens (no LCD refresh, no buttons).
 - **Debugging rule:** if the program "stops" at the first sensor read or LCD write, suspect the I2C wiring/pull-ups/address first, not the logic.
+
+
+## 11. What MCC generated for ADCC
+
+New files: `adcc.c/h`. `SYSTEM_Initialize()` now also calls `ADCC_Initialize()`.
+
+### Checking the generated values
+- **`ADCON0 = 0x84`:**
+  - Bit 7 `ADON = 1`: ADC on.
+  - Bit 2 `ADFM = 1`: right-aligned result.
+  - `ADCS = 0`: the clock comes from Fosc through `ADCLK`.
+  - `ADCONT = 0`: no continuous mode, one conversion per request.
+- **`ADCLK = 0x03`:** divider = 2 × (3 + 1) = **FOSC/8** → TAD = 2 µs at 4 MHz.
+- **`ADACQ = 0x0A`:** 10 TAD of acquisition = 20 µs.
+- **`ADREF = 0x00`:** positive reference VDD, negative VSS.
+- **`ADCON2 = 0x00`:** `ADMD = Basic_mode` (no averaging or filtering).
+- **`ADPCH = 0x00`:** channel ANA0 = RA0.
+- **Pin RA0** (no change needed in `pin_manager.c`):
+  - `TRISA` bit 0 = 1 → input.
+  - `ANSELA` bit 0 = 1 → analog.
+  - `WPUA = 0x00` → no pull-up.
+  - The generated pin macros are named `POT_*`.
+- **Channel enum:** `POT = 0x0`, so a reading is `ADCC_GetSingleConversion(POT)`. The other entries (`channel_Temp`, `channel_FVR_buf1`, ...) are internal channels we don't use.
+- **No ADC interrupt:** `interrupt_manager.c` is unchanged.
+
+### How a reading works (`ADCC_GetSingleConversion`)
+1. It selects the channel, turns the ADC on, and sets `ADGO = 1` to start.
+2. The hardware waits the acquisition time (ADACQ), then converts.
+3. The function waits in `while (ADCON0bits.ADGO)` until the hardware clears `ADGO`, about 20 µs + 24 µs ≈ **45 µs**.
+4. It returns `ADRESH:ADRESL` (0-1023).
+
+Like the I2C driver, this is a polled wait. Unlike I2C, it can't hang: the ADC always finishes on its own, there's no external device involved.
+
+### Energy note (for the report)
+- `ADON` stays **1** after init and after each reading, so the ADC module stays powered between readings. The idle current is small, but it isn't zero.
+- Since `ADCC_GetSingleConversion()` sets `ADON = 1` itself, the code can turn it off after reading (`ADCON0bits.ADON = 0;`) with no other change.
+- That's a possible energy-saving step: measure the current with and without it.
