@@ -1,256 +1,9 @@
 # STUDY - what we did and why
 
-An explanation of every decision in this project. Check here first when something isn't clear. New entries are added whenever something is done or a question is answered.
+The technical decisions of the project and the reasons behind them, organized by topic. Check here first when something isn't clear.
 
 
-## 1. Repository setup
-
-- **`.gitignore`** leaves out MPLAB X build output (`build/`, `dist/`, `debug/`), per-user IDE settings (`nbproject/private/`) and files MPLAB regenerates (`nbproject/Makefile-*.mk`, `Makefile-genesis.properties`). These change on every build or differ per computer, so committing them only causes merge conflicts.
-- **What *is* committed:** the sources, `nbproject/configurations.xml` + `project.xml` (the project definition), the MCC config file (`.mc3`) and `mcc_generated_files/`. With these, anyone can open, build and regenerate the project.
-- **Branch `master` only, no branches:** everything is committed straight to `master`, and only code that builds. For a small team with a short deadline, this keeps things simple: there are no merges to manage.
-- **`mcc-manifest-autosave.yml` is ignored:** MCC rewrites it constantly while you edit, so it's noise. `mcc-manifest-generated-success.yml` *is* committed, because it records which MCC/library versions generated the code.
-
-### Files owned by root (MCC "IllegalStateException")
-- **Symptom:** MCC wouldn't open, showing `IllegalStateException: CoreRunner has not yet been instantiated`.
-- **Real cause:** earlier in the log was `java.io.IOException: Permission denied`. The `project.X` folder was owned by `root` because MPLAB X had been started with `sudo`. MCC couldn't write its config file into the project, so loading failed, and the exception was just the follow-on error.
-- **Fix:** `sudo chown -R simaosilva:simaosilva <project folder>`, and always start MPLAB X as the normal user, never with `sudo`.
-- **Lesson:** when a tool shows a strange error, read the *first* error in its log, not the last one.
-
-
-## 2. MCC (MPLAB Code Configurator)
-
-- **What it is:** a graphical tool that generates the C code that configures the peripherals (registers for timers, I2C, ADC, pins...). It puts that code in `mcc_generated_files/`, plus a `main.c`.
-- **Why use it:** setting registers by hand is slow and easy to get wrong. MCC writes correct init code and simple driver functions, so our time goes into the actual system logic.
-- **Classic, not Melody:** MCC has two content types. We use **Classic**, which is what got installed and opened (library `pic10-pic12-pic16-pic18 1.82.1`). Classic and Melody generate different file layouts and function names, e.g. Classic `mcc.h` + `TMR1_SetInterruptHandler()` vs Melody `system/system.h` + `TMR1_OverflowCallbackRegister()`.
-- **Rules:** never hand-edit generated files, because regenerating overwrites them. Our code lives in our own `.c` files and calls the MCC functions. Only one person changes the MCC config, so the generated files never conflict in merges.
-
-### Removing a module added by mistake (e.g. TMR0)
-In **Project Resources**, right-click the module → **Remove** (or click the remove icon next to it), then **Generate** again. If TMR0's files were already generated, regenerating deletes them, or you can delete `tmr0.c/h` yourself.
-
-
-## 3. System Module: clock
-
-- **Oscillator: HFINTOSC** (the internal high-frequency oscillator). It needs no external parts and it's accurate enough for the CPU. The 1 s clock accuracy comes from Timer1, not from this oscillator.
-- **Frequency 4 MHz, divider 1:**
-  - HFINTOSC can run at several frequencies (1, 2, 4, 8, 12, 16, 32 MHz). The divider (NDIV) then divides that.
-  - 4 MHz with divider 1 gives **Fosc = 4 MHz**. 32 MHz with divider 8 also gives 4 MHz, but divider 1 is the direct, simplest setting.
-  - Why 4 MHz:
-    - The PIC executes one instruction every 4 clock cycles, so 4 MHz → 1 MHz instruction rate → **1 µs per instruction**. That makes timing measurements easy to reason about.
-    - A lower clock means lower current while awake (part of the energy-saving requirement).
-    - It's still fast enough for everything we need. I2C at 100 kHz: baud register = 4 MHz / (4 × 100 kHz) − 1 = 9. EUSART at 9600: high-speed BRG = 4 MHz / (4 × 9600) − 1 ≈ 103, which is about 0.2 % error.
-  - If something turns out too slow later, raise the frequency here and regenerate.
-- **Watchdog off:** the watchdog resets the chip unless the program clears it regularly. We don't use it; with it on, the board would reset by itself.
-- **Low-voltage programming on:** this lets the onboard debugger program the chip without the high programming voltage. It's the normal setting for the Curiosity board.
-
-
-## 4. Pins
-
-### LEDs D2-D5 on RA4-RA7 (outputs)
-- On the Curiosity HPC board, the user LEDs are labelled **D2, D3, D4, D5** on the silkscreen and connected to **RA4, RA5, RA6, RA7**. D1 belongs to the board itself (power indicator), not to our program, so the user LEDs start at D2. The project statement uses the same names.
-- Use: D5 blinks every second (shows the clock is alive). D2 is the PWM alarm LED. D3/D4 are for alarm indication.
-- Custom names (`LED_D2`…`LED_D5`) make MCC generate macros like `LED_D5_Toggle()`, so we don't have to remember `LATAbits.LATA7`.
-
-### Buttons S1 (RB4) and S2 (RC5) (inputs), named `SW1` / `SW2`
-- The custom names give macros like `SW1_GetValue()`. The name only affects the generated code, so `SW1`/`SW2` is fine. The README and the project statement call them S1/S2.
-- **Weak pull-up (WPU):**
-  - A button connects the pin to **GND** when pressed. When it's released, nothing drives the pin, so it would "float" and read random values.
-  - The pull-up is an internal resistor to VDD. It holds the pin **high (1) when released**; pressing pulls it **low (0)**.
-  - So the buttons are **active low**: pressed = 0.
-  - **This board already has external pull-ups** (Curiosity HPC schematic, sheet 8):
-    - **S1 → RB4:** pull-up **R3 = 10 kΩ** to TVDD, plus **R11 = 1 kΩ** in series to the pin.
-    - **S2 → RC5:** pull-up **R9 = 10 kΩ**, plus **R10 = 1 kΩ** in series.
-    - The 1 kΩ series resistors protect the pin if it's accidentally configured as an output while the button is pressed (that would short it to GND).
-    - So the WPU on RB4/RC5 isn't needed. It's harmless, though: a much weaker resistor in parallel with the 10 kΩ. It can stay on or be turned off.
-- **IOC (interrupt-on-change) on the negative / falling edge:**
-  - IOC lets a pin change cause an interrupt, so the main loop doesn't have to poll the buttons. It also **wakes the PIC from sleep**, which we need because the system sleeps when idle.
-  - Falling edge = the 1 → 0 transition = **the moment the button is pressed**. Positive edge would be the release. We only care about presses, so negative-only avoids a second interrupt per press.
-  - Mechanical buttons **bounce**: one press makes several quick edges. That's why the ISR only sets a flag, and debouncing (~20-50 ms) happens in the main loop.
-
-
-## 5. Timer1: the 1 s clock
-
-### Why Timer1 (and not Timer0)
-- The project statement asks for Timer1 to drive the clock.
-- Timer1 is the PIC's "real-time clock" timer:
-  - It's **16-bit**.
-  - It can be clocked from the low-frequency sources that keep running in sleep (LFINTOSC, or SOSC with a 32.768 kHz watch crystal).
-- It can run **asynchronously**, from its own clock, so it keeps counting during **sleep** and its interrupt wakes the CPU. The clock must not stop while sleeping.
-- Timer0 is left free; we don't need it now. A TMR0 added by mistake should be removed (see section 2).
-
-### Settings
-- **Clock source: LFINTOSC** (internal ~31 kHz oscillator):
-  - **Why not SOSC:** SOSC needs an external 32.768 kHz crystal. The Curiosity HPC schematic (Rev 2, sheet 8) has a footprint for it, **Y2** (with capacitors C21/C22), but it's marked **N.M. / DNP** (not mounted). With no crystal, SOSC simply never oscillates and the clock would never tick.
-  - **Why LFINTOSC works:** it's built into the chip, needs no parts, and **keeps running during sleep**, which is exactly what the clock needs.
-  - **The cost:** it's much less accurate than a crystal. Its frequency can be off by several percent and changes with temperature and voltage, so the clock will drift (a 1 % error is about 14 min per day).
-  - **Calibration knob:** at ~31 kHz, 1 s ≈ 31000 counts, so MCC sets the preload to about 65536 − 31000. Measure the real drift against a stopwatch over 10+ minutes. If it's consistently fast or slow, adjust the period/preload value to correct it.
-  - Write the measured drift in the report. It's a real trade-off: low power and no extra parts, in exchange for accuracy.
-- **Prescaler 1:1, period 1 s:** MCC computes the preload value so the counter overflows every second.
-- **TMRI vs TMRGI in the Interrupt Module:** adding TMR1 makes MCC list two interrupts.
-  - **TMRI** = the Timer1 **overflow** interrupt. This is our 1 s tick. Enable it.
-  - **TMRGI** = the Timer1 **gate** interrupt. Timer1 has a "gate" feature: an external signal (the T1G pin, a comparator, etc.) starts and stops counting, which is used to measure how long a pulse lasts. The gate interrupt fires when one such measurement finishes.
-  - We don't use the gate (Timer1 counts all the time), so **leave TMRGI disabled**. Enabling it would only add an interrupt source that never does anything useful for us.
-- **Synchronization off (asynchronous):**
-  - **What synchronization is:** Timer1 has its own clock (LFINTOSC), which isn't aligned with the CPU clock (Fosc). With synchronization **on**, each Timer1 clock edge first goes through a small synchronizer circuit. That circuit samples the edge using the **CPU clock**, and only then lets the counter increment. This keeps the counter changing in step with the CPU, so the CPU never reads it halfway through a change.
-  - **Why it stops in sleep:** `SLEEP()` turns off the CPU clock. The synchronizer needs that clock to pass edges through, so the edges are blocked and the counter freezes. No overflow happens, so there's no interrupt and the chip never wakes up from the timer. The clock would stop while sleeping.
-  - **Asynchronous (synchronization off):** the LFINTOSC edges go **straight to the counter**, without passing through the CPU clock. LFINTOSC keeps running in sleep, so the counter keeps counting. The overflow sets the interrupt flag, and that interrupt **wakes the CPU**. This is how we get a 1 s tick while sleeping.
-  - **The cost:** because the counter changes independently of the CPU, reading or writing `TMR1H:TMR1L` while it runs could catch the two bytes mid-change. To avoid this, we don't read the counter at all: we only use the overflow interrupt and keep hh:mm:ss in variables. When the clock is set, we change those variables, not the timer, so the timer never has to stop (this is also the requirement that "setting the clock doesn't stall the seconds").
-- **Timer interrupt on:** each overflow (each second) calls our handler. The handler only updates hh:mm:ss and sets a flag; the main loop does the rest (cyclic executive, short ISRs).
-
-
-## 6. What MCC generated (Classic)
-
-| File | What it does |
-|---|---|
-| `main.c` | Our program. MCC creates it once; after that it's ours to edit. |
-| `mcc.c/h` | `SYSTEM_Initialize()` calls every module's init, plus the oscillator setup (`OSCCON1 = 0x60` → HFINTOSC, NDIV 1; `OSCFRQ = 0x02` → 4 MHz). |
-| `device_config.c` | Configuration bits (`#pragma config`): `WDTE = OFF`, `LVP = ON`, `RSTOSC = HFINT1` (starts at 1 MHz, then the oscillator init switches to 4 MHz). |
-| `pin_manager.c/h` | Pin directions, pull-ups, IOC, and macros like `LED_5_Toggle()`, `SW1_GetValue()`, `IOCBF4_SetInterruptHandler()`. |
-| `tmr1.c/h` | Timer1 init, the ISR, and `TMR1_SetInterruptHandler()`. |
-| `interrupt_manager.c/h` | The single interrupt function of the PIC16 (`__interrupt()`). It checks which flag is set and calls the right module ISR. |
-
-### How the interrupt reaches our code
-1. Timer1 overflows and sets the `TMR1IF` flag. The CPU jumps to `INTERRUPT_InterruptManager()`.
-2. The manager sees `TMR1IE && TMR1IF` and calls `TMR1_ISR()`.
-3. `TMR1_ISR()` clears the flag, reloads the counter, and calls the function we registered with `TMR1_SetInterruptHandler()`.
-4. The same chain applies to the buttons: `PIN_MANAGER_IOC()` → `IOCBF4_ISR()` → our function registered with `IOCBF4_SetInterruptHandler()`.
-
-We never edit these files. We only **register our own functions** (callbacks).
-
-### Reading the generated values (to check the configuration)
-- **Pins:**
-  - `TRISA = 0x0F`: bits 4-7 = 0, so **RA4-RA7 are outputs** (TRIS bit 0 = output, 1 = input, mnemonic "0 = Output").
-  - `WPUB = 0x10` (bit 4) and `WPUC = 0x20` (bit 5): pull-ups on RB4 and RC5.
-  - `ANSELB = 0xEF` and `ANSELC = 0xDF`: RB4 and RC5 are digital. They must be, or they always read 0.
-  - `IOCBN4 = 1`, `IOCCN5 = 1`: falling-edge interrupt on the buttons.
-- **Timer1:**
-  - `T1CLK = 0x04` → LFINTOSC.
-  - `T1CON = 0x05` → prescaler 1:1, `nT1SYNC` = not synchronized, timer on.
-  - Preload `TMR1H:TMR1L = 0x86E8` = 34536, and 65536 − 34536 = **31000 counts = 1 s at 31 kHz**.
-  - **This preload is the calibration knob**: if the clock runs slow, use a slightly higher preload (fewer counts), and vice versa.
-
-### Small inaccuracy from the reload
-After each overflow, `TMR1_ISR()` writes the preload again. Any counts between the overflow and that write are lost, so each second is a few tens of µs longer: about 1 count in 31000, roughly 0.003 %. That's negligible next to LFINTOSC's own error (percent level), so we accept it.
-
-### Why the interrupt enable lines must be uncommented
-`TMR1IE` / `IOCIE` only allow each source. The CPU also needs:
-- **GIE** (global interrupt enable, `INTERRUPT_GlobalInterruptEnable()`);
-- **PEIE** (peripheral interrupt enable, `INTERRUPT_PeripheralInterruptEnable()`), because Timer1 is a "peripheral" interrupt.
-
-Without both, the flags get set but the ISR never runs. MCC leaves these lines commented so we choose *when* interrupts start (after all init is done).
-
-### Toggle vs blink rate
-`LED_5_Toggle()` once per second means 1 s on, then 1 s off: **one full blink every 2 s**. To check the timing, count toggles (state changes) instead of blinks: 60 per minute.
-
-
-## 7. Regenerating MCC code: what gets replaced
-
-- **`mcc_generated_files/`** is rewritten every time you click Generate. If you edited one of these files, MCC Classic opens a merge window and asks what to keep, but the rule is simple: **never edit them**, so there's nothing to lose.
-- **`main.c`** is created only when it doesn't exist yet. Regenerating doesn't replace it. If MCC wants to change it, it shows the merge window, where you keep your version.
-- **Our own files** (`clock.c`, `lcd.c`, ...) are never touched by MCC.
-- **Safety net:** **commit before regenerating**. Afterwards, `git diff` shows exactly what MCC changed, and `git checkout -- <file>` restores anything it shouldn't have touched.
-- So it's safe to add peripherals (I2C, ADC, PWM, ...) and regenerate as the project grows, without configuring everything up front.
-
-### Which pins can be configured now
-- **TC74 sensor (I2C):** MSSP1 in I2C Master mode, 100 kHz. Its pins (SCL/SDA) have to match how the TC74 is wired.
-  - On the Curiosity HPC, the mikroBUS I2C pins are RC3 = SCL and RC4 = SDA. Check the board/wiring before choosing them.
-  - I2C lines need pull-up resistors: the TC74 board usually has them, otherwise use the pins' WPU.
-- **Potentiometer (ADC):** ADCC on the potentiometer pin (RA0 on the Curiosity HPC; check the board). Set it as an analog input.
-- **LCD:** the pins depend on the LCD type and how it's wired (4-bit parallel: RS, E, D4-D7; or an I2C backpack, which shares the I2C bus with the TC74). Configure them once the wiring is known.
-
-
-## 8. TC74 (I2C) and potentiometer (ADC) in MCC
-
-### TC74 temperature sensor → MSSP1 as I2C Master
-- **I2C** is a 2-wire bus: **SCL** (clock, driven by the master) and **SDA** (data, both directions). The PIC is the **master**; the TC74 is a **slave** with a fixed 7-bit address (TC74A5 = **0x4D**; the letter/number on the chip says which).
-- The PIC does I2C in hardware with the **MSSP** module (Master Synchronous Serial Port). MSSP1 in "I2C Master" mode generates the clock and the start/stop/ack bits, so the software only gives it bytes.
-- **100 kHz (standard mode):** the TC74 supports up to 100 kHz. With Fosc = 4 MHz the baud register is `SSPADD = 4 MHz / (4 × 100 kHz) − 1 = 9`.
-- **Polled, not interrupt-driven:**
-  - **Polled:** the driver starts each step (start bit, send byte, read byte, stop) and then **waits in a loop** until the MSSP hardware sets its "done" flag. The function returns only when the whole transfer is finished. It's simple, the order of operations is obvious, and it's easy to debug.
-  - **Interrupt-driven:** the driver starts the transfer and returns immediately. Every finished step causes an MSSP interrupt, and the ISR runs a state machine that starts the next step. The CPU is free during the transfer, but the code is more complex: a state machine inside an ISR, an extra interrupt source in the cyclic executive, and the caller has to check later whether the result is ready.
-  - **Why polled is enough here:**
-    - A TC74 read is about 4 bytes ≈ 40 bits ≈ **0.4 ms** at 100 kHz.
-    - It happens once every PMON seconds (≥ 1 s).
-    - Blocking 0.4 ms once per second is **< 0.05 %** of the CPU time, and far shorter than the 1 s tick, so no deadline is missed and the clock still updates on time (the Timer1 interrupt still interrupts the wait).
-    - It also matches the cyclic executive design: ISRs stay minimal (only the clock and buttons), and all work happens in the main loop.
-  - **When interrupt-driven would be worth it:** long or frequent transfers (e.g. many bytes, 400 kHz streams), or when the main loop has tight timing that 0.4 ms would break. Neither applies here.
-  - **Risk to know:** if the bus is broken (no pull-ups, sensor unplugged, SCL stuck low), a polled driver can wait forever on a flag that never comes, and the main loop freezes. If the system "hangs" when reading the sensor, check the wiring and pull-ups first.
-- **Slew rate: "Standard speed (100 kHz)":**
-  - **Slew rate** = how fast a pin's voltage rises or falls on each edge.
-  - MSSP has a **slew rate control** setting (the `SMP` bit in `SSP1STAT`). When enabled, it slows the edges down on purpose.
-  - The I2C spec requires that only for **Fast mode (400 kHz)**: there, the edges are close together, and slowed edges reduce ringing, glitches and interference.
-  - At **100 kHz (standard mode)**, slew rate control isn't needed. The datasheet says to **disable** it for 100 kHz (and 1 MHz); "Standard speed" in MCC does exactly that (`SMP = 1`).
-  - The rule: the slew-rate setting must match the bus speed. Since we chose 100 kHz (the TC74's maximum), we choose standard speed.
-- **Decision: WPU on RC3 (SCL) and RC4 (SDA).**
-  - We only have the Curiosity HPC, the TC74 and the display. No external resistors are allowed, and neither the board nor the TC74 has I2C pull-ups.
-  - The PIC's internal weak pull-ups are therefore the only option. Their rise time is slower than the I2C spec (see above), but with short wires and only one or two devices on the bus, it normally works.
-  - **If reads fail or come back wrong (e.g. 0xFF or a hang):**
-    1. Check the wiring and that the address is 0x4D.
-    2. **Lower the I2C clock** in MCC (e.g. 100 kHz → 50 kHz or less). A slower clock gives each slowly-rising edge more time, so the weak pull-ups are enough. This is the tuning knob: the TC74 doesn't need speed (one byte every PMON seconds).
-    3. Keep the wires to the TC74 short.
-  - **Update: the display does have an I2C backpack** (see section 9). These modules usually have SDA/SCL pull-ups on board, and since the bus is shared, they would serve the TC74 too. Until that's checked, keep WPU on; it's harmless in parallel.
-- **Pins, via PPS:** on this PIC, peripheral pins can be moved (Peripheral Pin Select).
-  - We use **RC3 = SCL1, RC4 = SDA1**, the I2C pins of mikroBUS 1 on the Curiosity HPC (and the MSSP1 defaults).
-  - I2C needs **both** an input and an output mapping on each pin, because the module drives and reads the same wire. MCC sets both.
-- **Pull-ups:**
-  - I2C lines are **open-drain**: devices only pull the line low; a resistor pulls it high.
-  - Without pull-ups, the bus stays low and nothing works.
-  - **The Curiosity HPC has no I2C pull-ups.** In the schematic (sheet 8), RC3/RC4 go to the mikroBUS SCL/SDA pins only through solder-blob jumpers **J36/J37** (module 1) and **J42/J43** (module 2), with no resistors to VDD and no footprint for them.
-  - **The TC74 chip has no internal pull-ups.** They have to come from the board it's mounted on, from external resistors, or from the PIC's WPU.
-  - **How to check whether there are pull-ups (multimeter):**
-    - **Board unpowered, resistance mode:** measure between SDA and VDD (3.3 V/5 V pin), then between SCL and VDD.
-      - A few kΩ (typically 2.2k, 4.7k or 10k) → there's a pull-up.
-      - Open (OL) or MΩ → there's none.
-    - **Board powered, PIC held in reset or not driving the pins, voltage mode:** measure SDA and SCL to GND.
-      - Steady ≈ VDD → there's a pull-up.
-      - ≈ 0 V or a wandering value → there's none (the line is floating).
-      - In reset, all pins are inputs with WPU off, so the reading shows only the external parts.
-    - **Or look at it:** small resistors on the TC74 board between each line and VDD, or check its schematic.
-  - **What to do with the result:**
-    - **External pull-ups present:** WPU can stay off. Turning it on doesn't hurt: it's just a much weaker resistor in parallel, which changes almost nothing.
-    - **No pull-ups:** the proper fix is **4.7 kΩ from SDA to VDD and 4.7 kΩ from SCL to VDD**. The PIC's WPU is a fallback. It's weak (≈140 µA → roughly 25-35 kΩ), so the edges rise slowly: R·C with ~50 pF of wires gives ~1.5 µs, while standard mode allows max 1 µs rise time. It's out of spec but often works with short wires. If the reads fail or are flaky, add the real resistors.
-- **Generated API:**
-  - `I2C1_Open/Close` etc. are generated in `i2c1_master.c`.
-  - MCC also generates an example file with `I2C1_Read1ByteRegister(address, reg)`.
-  - Reading the TC74 temperature is `I2C1_Read1ByteRegister(0x4D, 0x00)`: register 0x00 = TEMP, in °C, signed 8-bit.
-  - This is B's part (`tc74.c`).
-
-### Potentiometer → ADCC
-- **ADCC** = "ADC with Computation", the PIC16F18875's **10-bit** ADC. It converts a voltage between VSS (0 V) and VDD into 0-1023.
-- The potentiometer on the Curiosity HPC is on **RA0** (analog channel ANA0). Confirmed in the schematic (sheet 8): **R1 = 10 kΩ pot** between TVDD and GND, its wiper through **R2 = 1 kΩ** and solder-blob jumper **J3** to RA0. The pin must be **input + analog** (ANSEL = 1). Its pull-up must be **off**, because a pull-up would add current and shift the voltage.
-- **Operating mode: Basic_mode:**
-  - The ADCC ("with Computation") can do extra work in hardware after each conversion:
-    - **Accumulate:** add up several results.
-    - **Average / Burst Average:** take N conversions and divide.
-    - **Low-pass filter:** smooth the value over time.
-    - **Threshold compare:** interrupt when the value crosses a limit.
-  - **Basic** = plain single conversions: one start, one result, no extra computation.
-  - We only need **8 levels** (128 ADC counts per level). The noise on the pot reading is a few counts, much smaller than one level, so averaging or filtering adds configuration for no visible benefit.
-  - **Known limit:** when the knob sits exactly on a level boundary, the level could flicker between two values (e.g. 3 ↔ 4) from one reading to the next. If that ever matters, switch to Average mode (e.g. 4-16 samples) or add hysteresis in software.
-- **Clock: FOSC/8** (the CPU clock divided by 8):
-  - The ADC converts one bit per clock period, called **TAD**. For this PIC, TAD must be between **1 µs and 9 µs** (datasheet). Faster, and the result is wrong; slower, and the capacitor leaks during the conversion.
-  - The first idea was **FRC** (the ADC's own RC clock): always a valid TAD whatever the CPU speed, and it works in sleep. But MCC Classic only offered **FOSC with a divider** for this module, so we pick the divider ourselves.
-  - With Fosc = 4 MHz:
-    - FOSC/4 → TAD = 1 µs (exactly the minimum, no margin).
-    - **FOSC/8 → TAD = 2 µs** (safely inside 1-9 µs).
-    - FOSC/16 → 4 µs (also fine, just slower).
-  - **FOSC/8** is the fastest choice with margin. A 10-bit conversion takes about 12 TAD ≈ **24 µs**.
-  - **What we lose compared to FRC:**
-    - The ADC can't convert during sleep. That doesn't matter: we read the pot while awake, in the main loop.
-    - **If Fosc ever changes, the divider must be recalculated**: TAD = divider / Fosc, which must stay within 1-9 µs. For example, at 32 MHz FOSC/8 = 0.25 µs is too fast, and you'd need FOSC/32 or FOSC/64.
-- **References VDD / VSS:** full-scale = the supply voltage, which is the same voltage across the potentiometer. So the reading only depends on the knob position, not on the exact supply voltage.
-- **Right-aligned result:** the 10-bit value sits in the low bits of a 16-bit number (0-1023), so `level = adc >> 7` gives **0-7** (1024 / 8 = 128 per level).
-- **Acquisition time:**
-  - Before converting, the ADC's internal capacitor has to charge to the pin voltage.
-  - The potentiometer is a low-resistance source, so a short time is enough.
-  - Our source resistance: the pot wiper is at most ~2.5 kΩ (10 kΩ pot in the middle), plus **R2 = 1 kΩ** in series, so about 3.5 kΩ. With that, the capacitor needs only a few µs to charge (datasheet acquisition formula).
-  - **Acquisition count = 10** means 10 ADC clock periods (TAD) before the conversion starts. With TAD = 2 µs, that's **20 µs**: several times the few µs needed, so the reading is always settled, and the cost is negligible since we read once every PMON seconds.
-  - With 0, the conversion would start immediately, and the first reading after switching channels can be off.
-  - This is a tuning knob: if readings jump, increase it.
-- **No ADC interrupt:** one conversion takes tens of µs, so waiting for it (`ADCC_GetSingleConversion(channel)`) is simpler than an interrupt.
-- **Generated API:** `ADCC_GetSingleConversion(<channel>)` in `adcc.h`. The channel name comes from the pin's custom name (`POT`). This is B's part (`adc.c`).
-
-
-## Reference: Curiosity HPC schematic
+## 1. The board (Curiosity HPC)
 
 Source: Microchip "Curiosity HPC Schematics Rev 2" (DM164136), sheet 8, "mikroBUS and Target PIC Interface".
 
@@ -263,438 +16,400 @@ Source: Microchip "Curiosity HPC Schematics Rev 2" (DM164136), sheet 8, "mikroBU
 | Potentiometer | R1 10 kΩ, wiper → R2 1 kΩ → J3 → RA0 |
 | 32.768 kHz crystal | Y2 + C21/C22, **not mounted** |
 | mikroBUS 1 I2C | SCL = RC3 (J36), SDA = RC4 (J37), **no pull-ups** |
-| mikroBUS 2 I2C | SCL = RC3 (J42), SDA = RC4 (J43), **no pull-ups** |
+| mikroBUS 1 UART | TX = RC6, RX = RC7, through 330 Ω (R39/R40) |
 
-"Solder-blob jumpers" (J1-J7 etc.) are pads bridged with solder on the board. If one is cut/open, that pin is disconnected from its LED/button.
+- "Solder-blob jumpers" (J1-J7 etc.) are pads bridged with solder. If one is open, that pin is disconnected from its LED/button.
+- D1 is the board's own power LED, not ours. That's why the user LEDs start at D2.
+- **Power-up delay:** the onboard debugger (PKOB4) boots first and then switches on the PIC's supply, which can take a second or two. On top of that, the first D5 toggle comes 1 s after the program starts (all LEDs start off). Neither is a bug.
+- **Supply:** the board can give the target 3.3 V or 5 V. We use **5 V** for everything (section 7).
+- Parts available: only the board, the TC74 and the LCD. No external resistors or capacitors.
 
 
-## 9. The display: 16x2 LCD with an I2C backpack
+## 2. MCC (MPLAB Code Configurator)
 
-- **What it is:**
-  - A 16x2 character LCD (QAPASS 1602) with an **HD44780**-compatible controller.
-  - On the back is a black **"MH" backpack** with a **PCF8574** chip, a blue potentiometer and a 4-pin header (GND, VCC, SDA, SCL).
-- **What the backpack does:**
-  - The HD44780 normally needs 6+ wires (RS, E, D4-D7...).
-  - The **PCF8574** is an I2C "I/O expander": it has 8 output pins, and you set them by sending it one byte over I2C. The backpack wires those 8 pins to the LCD (RS, RW, E, backlight, D4-D7).
-  - So we drive the LCD in **4-bit mode** by sending bytes to the PCF8574, using only the two I2C wires.
-- **Consequences for the project:**
-  - **No extra PIC pins for the LCD.** It sits on the **same I2C bus as the TC74** (RC3 = SCL, RC4 = SDA). Two devices with different addresses on the same two wires is normal I2C.
-  - **Address:** **0x27** if the chip is a **PCF8574T**, **0x3F** if it's a **PCF8574AT**. Read the marking on the chip. The TC74 is 0x4D, so there's no conflict.
-  - **Speed:**
-    - Each LCD character needs several I2C bytes (each 4-bit half is sent with E high, then E low), so writing a full line takes a few ms at 100 kHz.
-    - That's fine for refreshing once per second, but only refresh what changed, and never do it from an ISR.
-  - **Shared bus = one user at a time:** the TC74 read and the LCD update must never overlap. They both run from the main loop (never from an ISR), so they're naturally one after the other.
-- **The blue potentiometer** sets the **contrast**. If the LCD shows nothing, or only full black boxes, turn it first. The jumper next to the header switches the **backlight** on and off.
+- **What it is:** a graphical tool that generates the C code configuring the peripherals (timers, I2C, ADC, pins...). The code goes in `mcc_generated_files/`, plus a `main.c`.
+- **Why use it:** setting registers by hand is slow and error-prone. MCC writes correct init code and simple driver functions, so our time goes into the system logic.
+- **Classic, not Melody:**
+  - MCC has two content types; we use **Classic** (library `pic10-pic12-pic16-pic18 1.82.1`).
+  - The two generate different file layouts and function names. For example, Classic has `mcc.h` + `TMR1_SetInterruptHandler()`, where Melody has `system/system.h` + `TMR1_OverflowCallbackRegister()`.
+- **Never edit generated files:** every Generate rewrites `mcc_generated_files/`. Our code lives in our own `.c` files and calls the MCC functions.
+  - `main.c` is created only once. Later generations keep our version ("User edits maintained").
+  - Only one person changes the MCC config, so generated files never conflict.
+
+### Generated files
+
+| File | What it does |
+|---|---|
+| `mcc.c/h` | `SYSTEM_Initialize()` calls every module's init, plus the oscillator setup |
+| `device_config.c` | configuration bits (`#pragma config`) |
+| `pin_manager.c/h` | pin directions, pull-ups, IOC, PPS, macros like `LED_5_Toggle()`, `SW1_GetValue()` |
+| `interrupt_manager.c/h` | the PIC16's single interrupt function: checks which flag is set, calls that module's ISR |
+| `tmr0/tmr1/tmr2.c/h`, `pwm6`, `i2c1_master`, `adcc`, `memory`, `eusart` | one driver per peripheral (sections 5-12) |
+
+### How an interrupt reaches our code
+1. A peripheral sets its flag, e.g. Timer1 overflows → `TMR1IF`. The CPU jumps to `INTERRUPT_InterruptManager()`.
+2. The manager sees `TMR1IE && TMR1IF` and calls `TMR1_ISR()`.
+3. `TMR1_ISR()` clears the flag, does its work (reload), and calls the function we **registered** with `TMR1_SetInterruptHandler()`.
+4. Same chain for the buttons: `PIN_MANAGER_IOC()` → `IOCBF4_ISR()` → our function from `IOCBF4_SetInterruptHandler()`.
+
+We never edit these files; we only register our own callbacks.
+
+### Why the interrupt enable lines in `main.c` are needed
+Each source's enable bit (`TMR1IE`, `IOCIE`, ...) only allows that source. The CPU also needs:
+- **GIE**, the global enable: `INTERRUPT_GlobalInterruptEnable()`;
+- **PEIE**, the peripheral enable: `INTERRUPT_PeripheralInterruptEnable()`, because Timer1 is a "peripheral" interrupt.
+
+Without them, flags get set but no ISR runs. MCC leaves these lines commented so we choose when interrupts start (after all init).
+
+
+## 3. System clock and configuration bits
+
+- **Oscillator: HFINTOSC at 4 MHz, divider 1** (`OSCCON1 = 0x60`, `OSCFRQ = 0x02`):
+  - HFINTOSC is internal and needs no parts. The 1 s accuracy comes from Timer1, not from this clock.
+  - The divider (NDIV) divides the chosen frequency. 4 MHz ÷ 1 is the direct setting (32 MHz ÷ 8 gives the same).
+  - **Why 4 MHz:**
+    - One instruction = 4 clock cycles → **1 µs per instruction**, easy for timing.
+    - A lower clock means lower current while awake.
+    - It's fast enough for everything: I2C 100 kHz (SSP1ADD = 9), UART 9600 (SPBRG = 103, 0.16 % error), ADC (FOSC/8).
+  - If Fosc ever changes, recheck the I2C, UART and ADC clock settings (section 8).
+- **`RSTOSC = HFINT1`:** the chip starts at 1 MHz, and the oscillator init then switches it to 4 MHz.
+- **Watchdog off (`WDTE = OFF`):** the watchdog resets the chip unless the program clears it regularly. We don't use it.
+- **Low-voltage programming on (`LVP = ON`):** lets the onboard debugger program the chip. This is the normal setting for this board.
+- **`STVREN = ON`:** a hardware stack overflow causes a reset (section 17).
+
+
+## 4. Pins: LEDs and buttons
+
+### LEDs D2-D5 on RA4-RA7 (outputs)
+- `TRISA = 0x0F`: bits 4-7 = 0 → outputs (TRIS: 0 = Output, 1 = Input).
+- Use:
+  - D5 toggles every second (the clock is alive);
+  - D2 is the PWM alarm light (section 10);
+  - D3/D4 are for alarm indication.
+- The custom names `LED_2`…`LED_5` give macros like `LED_5_Toggle()` instead of `LATAbits.LATA7`.
+- **Toggle vs blink:** toggling once per second = 1 s on, 1 s off = one blink every 2 s. To check timing, count toggles (60 per minute).
+
+### Buttons S1 (RB4) and S2 (RC5), named `SW1` / `SW2` (inputs)
+- **Active low:** a press connects the pin to GND (reads 0). Released, the pull-up holds it at 1.
 - **Pull-ups:**
-  - These backpacks usually have SDA/SCL pull-ups on board (small resistors, often marked `472` = 4.7 kΩ or `103` = 10 kΩ, near the header). If so, they serve the TC74 too.
-  - Keeping the PIC's WPU on as well is harmless.
-- **Voltage, important:**
-  - The backpack's pull-ups go to **its own VCC**. If the LCD is powered from **5 V** while the PIC runs at **3.3 V**, SDA/SCL would be pulled to 5 V, above what the PIC pins accept at 3.3 V.
-  - **Power everything (PIC, TC74, LCD) from the same supply.** 5 V is the natural choice, because the LCD needs it for good contrast. The PIC16F18875 (1.8-5.5 V) and the TC74 (2.7-5.5 V) both work at 5 V.
-  - The Curiosity HPC can supply the target with 3.3 V or 5 V (selectable on the board). Check that it's set to 5 V.
-- **MCC:** nothing extra to configure. The LCD uses the MSSP1 I2C driver. `lcd.c` (C's part) is hand-written, because MCC has no HD44780/PCF8574 driver.
+  - The board already has external 10 kΩ pull-ups (R3, R9). The 1 kΩ series resistors protect the pin if it's ever configured as an output while pressed.
+  - The internal WPU (`WPUB = 0x10`, `WPUC` bit 5) is therefore not needed, but harmless: a much weaker resistor in parallel.
+- **Digital:** `ANSELB` bit 4 and `ANSELC` bit 5 = 0. An analog pin always reads 0 digitally.
+- **IOC (interrupt-on-change) on the falling edge** (`IOCBN4 = 1`, `IOCCN5 = 1`):
+  - A press causes an interrupt, so the main loop doesn't poll. IOC also **wakes the PIC from sleep**.
+  - Falling edge = 1 → 0 = the moment of the press. The rising edge (release) isn't needed.
+  - Bounce is handled in `buttons.c` (section 15).
+- **Unused pins** stay **analog** (`ANSEL = 1`, MCC's default). This disconnects their digital input buffers, so floating pins don't draw current.
 
 
-## 10. What MCC generated for MSSP1 (I2C)
+## 5. Timer1: the 1 s tick
 
-New files: `i2c1_master.c/h` (the driver) and `examples/i2c1_master_example.c/h` (ready-made helpers like `I2C1_Read1ByteRegister()`). `SYSTEM_Initialize()` now also calls `I2C1_Initialize()`.
+### Why Timer1
+- The project statement asks for it.
+- It's 16-bit and can run **asynchronously** from a low-frequency clock that keeps running in sleep, so it counts during sleep and its interrupt wakes the CPU. The clock must not stop while sleeping.
 
-### Checking the generated values
-- **`SSP1STAT = 0x80`:** bit 7 is `SMP = 1`, meaning slew rate control is **off**, which is right for 100 kHz standard mode (section 8).
-- **`SSP1CON1 = 0x08`:**
-  - `SSPM = 1000` → I2C Master mode, clock = Fosc / (4 × (SSP1ADD + 1)).
-  - `SSPEN` is 0 here. The driver turns the module on when a transfer starts (`I2C1_Open`) and off again at the end.
-- **`SSP1ADD = 0x09`:** 4 MHz / (4 × 10) = **100 kHz**.
-- **Pins:**
-  - `ANSELC = 0xC7`: bits 3, 4, 5 = 0, so RC3, RC4 (I2C) and RC5 (S2) are digital.
-  - `WPUC = 0x38`: pull-ups on RC3, RC4, RC5. These are the I2C pull-ups decided in section 8.
-  - `TRISC` stays all inputs. For I2C that's correct: the MSSP takes over the pins and drives them open-drain itself.
-- **PPS:** each I2C pin is mapped both ways (section 8).
-  - `RC3PPS = 0x14` (output: SCL1 on RC3) and `SSP1CLKPPS = 0x13` (input: SCL1 read from RC3).
-  - `RC4PPS = 0x15` (output: SDA1 on RC4) and `SSP1DATPPS = 0x14` (input: SDA1 read from RC4).
-  - Input PPS values encode the pin as port (A = 0, B = 1, C = 2) × 8 + pin number, so RC3 = 2·8 + 3 = 19 = 0x13 and RC4 = 0x14.
-- **Interrupts:** `interrupt_manager.c` is unchanged, so the driver is the **polled** version, as chosen.
+### Clock source: LFINTOSC (~31 kHz internal)
+- **Why not SOSC:** SOSC needs an external 32.768 kHz crystal. The board has the footprint (Y2) but it isn't mounted, so SOSC would never oscillate.
+- **Why LFINTOSC works:** it's built in, needs no parts, and keeps running in sleep.
+- **The cost: accuracy.** It can be off by several percent, varying with temperature and voltage. 1 % is about 14 min per day. Measure the drift against a stopwatch over 10+ minutes and put it in the report: it's a trade-off of low power and no parts against accuracy.
+- **Calibration knob:**
+  - The preload `TMR1H:TMR1L = 0x86E8` = 34536, so 65536 − 34536 = **31000 counts = 1 s** at a nominal 31 kHz.
+  - If the clock runs slow, use a higher preload (fewer counts), and vice versa.
 
-### The hang risk, confirmed in the generated code
-- The polled driver waits for each I2C step with `while(1) { if (PIR3bits.SSP1IF) break; }`, which has **no timeout**. The `time_out` fields in the driver are only used by the interrupt version.
-- The example helpers also loop `while (I2C1_BUSY == I2C1_Open(address));`.
-- So if the bus is broken (TC74/LCD unplugged, no pull-ups, SDA or SCL stuck low), the main loop **freezes inside the I2C call**. The Timer1 ISR still runs, so the seconds keep counting, but nothing else happens (no LCD refresh, no buttons).
-- **Debugging rule:** if the program "stops" at the first sensor read or LCD write, suspect the I2C wiring/pull-ups/address first, not the logic.
+### Synchronization off (asynchronous)
+- **What synchronization is:** with it on, each Timer1 clock edge passes through a circuit that samples it with the **CPU clock** before the counter increments. That keeps the counter in step with the CPU.
+- **Why it must be off:**
+  - `SLEEP()` stops the CPU clock. A synchronized timer would freeze in sleep: no overflow, no interrupt, no wake-up.
+  - Asynchronous, the LFINTOSC edges go straight to the counter, so it keeps counting, and its overflow wakes the CPU.
+- **The cost:** reading or writing `TMR1H:TMR1L` while the timer runs could catch the two bytes mid-change. We never read it: we only use the overflow interrupt and keep the time in variables (section 14).
 
+### Interrupts: TMRI on, TMRGI off
+- **TMRI** = the overflow interrupt, our 1 s tick.
+- **TMRGI** = the gate interrupt: Timer1's "gate" lets an external signal start and stop counting, to measure pulse lengths. We don't use it, so it stays off.
 
-## 11. What MCC generated for ADCC
-
-New files: `adcc.c/h`. `SYSTEM_Initialize()` now also calls `ADCC_Initialize()`.
-
-### Checking the generated values
-- **`ADCON0 = 0x84`:**
-  - Bit 7 `ADON = 1`: ADC on.
-  - Bit 2 `ADFM = 1`: right-aligned result.
-  - `ADCS = 0`: the clock comes from Fosc through `ADCLK`.
-  - `ADCONT = 0`: no continuous mode, one conversion per request.
-- **`ADCLK = 0x03`:** divider = 2 × (3 + 1) = **FOSC/8** → TAD = 2 µs at 4 MHz.
-- **`ADACQ = 0x0A`:** 10 TAD of acquisition = 20 µs.
-- **`ADREF = 0x00`:** positive reference VDD, negative VSS.
-- **`ADCON2 = 0x00`:** `ADMD = Basic_mode` (no averaging or filtering).
-- **`ADPCH = 0x00`:** channel ANA0 = RA0.
-- **Pin RA0** (no change needed in `pin_manager.c`):
-  - `TRISA` bit 0 = 1 → input.
-  - `ANSELA` bit 0 = 1 → analog.
-  - `WPUA = 0x00` → no pull-up.
-  - The generated pin macros are named `POT_*`.
-- **Channel enum:** `POT = 0x0`, so a reading is `ADCC_GetSingleConversion(POT)`. The other entries (`channel_Temp`, `channel_FVR_buf1`, ...) are internal channels we don't use.
-- **No ADC interrupt:** `interrupt_manager.c` is unchanged.
-
-### How a reading works (`ADCC_GetSingleConversion`)
-1. It selects the channel, turns the ADC on, and sets `ADGO = 1` to start.
-2. The hardware waits the acquisition time (ADACQ), then converts.
-3. The function waits in `while (ADCON0bits.ADGO)` until the hardware clears `ADGO`, about 20 µs + 24 µs ≈ **45 µs**.
-4. It returns `ADRESH:ADRESL` (0-1023).
-
-Like the I2C driver, this is a polled wait. Unlike I2C, it can't hang: the ADC always finishes on its own, there's no external device involved.
-
-### Energy note (for the report)
-- `ADON` stays **1** after init and after each reading, so the ADC module stays powered between readings. The idle current is small, but it isn't zero.
-- Since `ADCC_GetSingleConversion()` sets `ADON = 1` itself, the code can turn it off after reading (`ADCON0bits.ADON = 0;`) with no other change.
-- That's a possible energy-saving step: measure the current with and without it.
+### Generated values
+- `T1CLK = 0x04` → LFINTOSC.
+- `T1CON = 0x05` → prescaler 1:1, `nT1SYNC` = not synchronized, timer on.
+- **Small reload error:** after each overflow, `TMR1_ISR()` writes the preload again. Counts between the overflow and that write are lost (about 1 in 31000, ≈ 0.003 %). That's negligible next to LFINTOSC's own error.
 
 
-## 12. The remaining peripherals: EEPROM, PWM, EUSART
+## 6. I2C bus (MSSP1): TC74 and LCD
 
-### EEPROM → Memory module
-- **What it is:** the PIC16F18875 has **256 bytes of data EEPROM**. It's non-volatile (it keeps its content without power), so it's where the config block and the max/min records live (README, EEPROM layout).
-- **MCC:** the **Memory** module with **"Add DataEE Routines"** ticked generates `DATAEE_WriteByte(addr, data)` and `DATAEE_ReadByte(addr)`. No interrupts.
-- **Address note:** on this PIC, EEPROM is mapped at **0xF000-0xF0FF** in the NVM address space. Check in `memory.h` whether the generated functions take the full address (0xF000 + offset) or just the offset (0-255), and use README offsets accordingly.
+- **I2C** is a 2-wire bus: **SCL** (clock, driven by the master) and **SDA** (data, both directions).
+  - The PIC is the **master**.
+  - Each slave has a 7-bit address: the TC74 (TC74A5 = **0x4D**, the chip marking tells which) and the LCD backpack (0x27 or 0x3F, section 7).
+  - Two devices on the same two wires is normal as long as their addresses differ.
+- The **MSSP** module does I2C in hardware: it generates the clock, the start/stop and the acks, and the software just gives it bytes.
+- **Pins: RC3 = SCL1, RC4 = SDA1** (mikroBUS 1, the MSSP1 defaults), mapped through **PPS** (Peripheral Pin Select).
+  - Each I2C pin needs **both** an output and an input mapping, because the module drives and reads the same wire: `RC3PPS = 0x14` + `SSP1CLKPPS = 0x13`, and `RC4PPS = 0x15` + `SSP1DATPPS = 0x14`.
+  - Input PPS values encode port × 8 + pin (A = 0, B = 1, C = 2), so RC3 = 19 = 0x13.
+  - `TRISC` stays input on these pins: the MSSP drives them itself, open-drain.
+
+### 100 kHz, standard speed
+- 100 kHz is the TC74's maximum. `SSP1ADD = 4 MHz / (4 × 100 kHz) − 1 = 9`.
+- **Slew rate control off** (`SSP1STAT = 0x80`, `SMP = 1`):
+  - Slew rate = how fast an edge rises or falls.
+  - Slew rate control slows edges on purpose, which the I2C spec needs only at 400 kHz (fast mode) to reduce ringing.
+  - At 100 kHz the datasheet says to disable it. The setting must match the bus speed.
+- `SSP1CON1 = 0x08` → I2C Master mode. The driver turns the module on and off around each transfer.
+
+### Pull-ups: the PIC's WPU on RC3/RC4
+- I2C lines are **open-drain**: devices only pull them low, and a resistor pulls them high. Without pull-ups, the bus stays low and nothing works.
+- The board has none, the TC74 chip has none, and we can't add resistors. The LCD backpack usually has them (section 7). The WPU on RC3/RC4 (`WPUC = 0x38`) makes sure there are always some.
+- **WPU limits:**
+  - It's weak (~25-35 kΩ), so edges rise slowly: ~1.5 µs with ~50 pF of wiring, while standard mode allows 1 µs.
+  - Out of spec, but it normally works with short wires and two devices.
+  - **Knob if reads fail:** lower the I2C clock (e.g. 50 kHz). Slower clocks give slow edges more time, and the TC74 doesn't need speed.
+
+### Polled driver, not interrupt-driven
+- **Polled:** the driver starts each step (start, byte, stop) and waits in a loop until the hardware's "done" flag is set. It's simple and the order of operations is obvious.
+- **Interrupt-driven:** returns immediately, and a state machine in the ISR runs each step. The CPU is free meanwhile, but there's more code, another interrupt source, and the result arrives later.
+- **Why polled is enough:**
+  - A TC74 read is ~4 bytes ≈ **0.4 ms**, once every PMON seconds: under 0.05 % of the CPU time.
+  - The Timer1 interrupt can still interrupt the wait, so no tick is late.
+  - The LCD writes are longer (section 7) but still a few ms, once per second.
+- **Hang risk (confirmed in the generated code):**
+  - The polled driver waits with `while(1) { if (PIR3bits.SSP1IF) break; }`, which has no timeout. The example helpers also loop on `while (I2C1_BUSY == I2C1_Open(address));`.
+  - If the bus is broken (device unplugged, no pull-ups, a line stuck low), the main loop **freezes inside the I2C call**. The seconds keep counting in the ISR, but nothing else happens.
+  - So if the program "stops" at the first sensor read or LCD write, suspect the wiring, pull-ups and address first.
+
+### TC74 API
+- `I2C1_Read1ByteRegister(0x4D, 0x00)` (from `examples/i2c1_master_example.h`) reads register 0x00 = TEMP: °C, signed 8-bit.
+
+
+
+## 7. The LCD: 16x2 HD44780 with a PCF8574 I2C backpack
+
+- **What it is:** a QAPASS 1602 character LCD (HD44780 controller), with a black "MH" backpack on the back. The backpack has a **PCF8574** chip, a blue potentiometer and a 4-pin header (GND, VCC, SDA, SCL).
+- **What the backpack does:**
+  - The HD44780 normally needs 6+ wires (RS, E, D4-D7).
+  - The PCF8574 is an I2C **I/O expander**: one byte sent over I2C sets its 8 output pins, which are wired to the LCD's RS, RW, E, backlight and D4-D7.
+  - So the LCD is driven in **4-bit mode**, by sending bytes to the PCF8574.
+- **Consequences:**
+  - **No extra PIC pins:** it shares the I2C bus with the TC74.
+  - **Address:** 0x27 for a **PCF8574T**, 0x3F for a **PCF8574AT** (read the chip).
+  - **Slow:** each character needs several I2C bytes (each 4-bit half is sent with E high, then E low), so a full line takes a few ms. Only refresh what changed, and never write to the LCD from an ISR.
+  - **Shared bus = one user at a time:** the TC74 read and the LCD update both run in the main loop, so they never overlap.
+- **Blue potentiometer = contrast.** If the LCD shows nothing or full black boxes, turn it first. The jumper by the header switches the backlight.
+- **Pull-ups:** these backpacks usually have SDA/SCL pull-ups (resistors marked `472` = 4.7 kΩ or `103` = 10 kΩ). If so, they serve the whole bus.
+- **Voltage:**
+  - The backpack's pull-ups go to its own VCC. An LCD at 5 V with the PIC at 3.3 V would pull SDA/SCL above what the PIC pins accept.
+  - So **everything runs at 5 V**. The LCD needs it for contrast, and the PIC (1.8-5.5 V) and TC74 (2.7-5.5 V) both support it.
+- `lcd.c` is hand-written (MCC has no HD44780/PCF8574 driver) on top of the MCC I2C driver.
+
+
+## 8. ADC (ADCC): the potentiometer
+
+- **ADCC** = "ADC with Computation", this PIC's **10-bit** ADC: a voltage between VSS and VDD becomes 0-1023.
+- **Pin RA0** (ANA0): input, analog, no pull-up (a pull-up would add current and shift the voltage). Generated macros are `POT_*`, and the channel is `POT`.
+- **Basic mode** (`ADCON2 = 0x00`):
+  - The ADCC can also accumulate, average, low-pass filter or compare against thresholds in hardware. Basic is one plain conversion per request.
+  - We only need **8 levels** (128 counts each), and the noise is a few counts, so filtering adds nothing visible.
+  - **Known limit:** with the knob exactly on a level boundary, the level can flicker (3 ↔ 4). The fix, if needed, is Average mode or hysteresis in software.
+- **Clock: FOSC/8** (`ADCLK = 0x03`, TAD = 2 µs):
+  - Each conversion step takes one TAD, which must be **1-9 µs** on this PIC.
+  - At 4 MHz: FOSC/4 = 1 µs (no margin), **FOSC/8 = 2 µs**, FOSC/16 = 4 µs. FOSC/8 is the fastest with margin.
+  - MCC Classic only offered FOSC dividers here. The internal FRC clock would be independent of Fosc and work in sleep, but we read while awake anyway.
+  - **If Fosc changes, recompute:** TAD = divider / Fosc must stay within 1-9 µs.
+- **References VDD / VSS** (`ADREF = 0x00`): the pot is also between VDD and GND, so the reading depends only on the knob position, not on the exact supply voltage.
+- **Right-aligned** (`ADFM = 1`): the result is a plain 0-1023, so `level = adc >> 7` gives 0-7.
+- **Acquisition: 10 TAD = 20 µs** (`ADACQ = 0x0A`):
+  - Before converting, the internal capacitor charges to the pin voltage.
+  - Our source is ≤ ~2.5 kΩ (pot wiper) + 1 kΩ (R2) ≈ 3.5 kΩ, which needs only a few µs, so 20 µs is comfortably settled.
+  - Knob: if readings jump, increase it.
+- **No interrupt:** `ADCC_GetSingleConversion(POT)` selects the channel, starts the conversion, waits for `ADGO` to clear (≈ 20 + 24 = **45 µs**), and returns the result. Unlike I2C, it can't hang.
+- **Energy:** `ADON` stays 1 between readings. The read function turns it on itself, so `ADCON0bits.ADON = 0;` after each reading is a free saving to measure.
+
+
+## 9. EEPROM (Memory module)
+
+- **256 bytes of data EEPROM**, non-volatile: it holds the config block and the max/min records (README, EEPROM layout).
+- **API:** `DATAEE_WriteByte(uint16_t addr, uint8_t data)` and `DATAEE_ReadByte(uint16_t addr)` take the **full address 0xF000 + offset**. The README lists offsets, so the magic word (offset 0) is at 0xF000 and the records (offset 16) start at 0xF010.
+- `NVMREGS = 1` selects EEPROM/config space instead of program flash.
 - **Write time and interrupts:**
-  - One byte takes about **4-5 ms** to write.
-  - The MCC routine disables interrupts (GIE = 0) for the unlock sequence (`0x55`, `0xAA`, `WR = 1`) and **waits until the write is done**, with interrupts still off.
-  - The unlock sequence must not be interrupted, or the write is refused. That's a hardware safety feature against accidental writes.
-  - **Consequence:** during each byte write (~4 ms), the Timer1 and button ISRs are delayed. The Timer1 *counter* keeps running in hardware and the overflow flag stays set, so the ISR runs as soon as interrupts come back. **No second is lost**, just served a few ms late.
-  - Saving the 12-byte config block blocks for ~50 ms. That's acceptable when it happens rarely (on config change, once per minute for CLKM), but it's another reason to write only bytes that changed.
-- **Wear:** each EEPROM cell survives about 100k writes (README note about CLKM).
-
-### PWM on LED D2 → TMR2 + PWM6
-- **What PWM is:** a square wave with a fixed period and a variable **duty cycle** (% of the time high). On an LED, a fast PWM looks like a steady light whose brightness is the duty cycle. This is the alarm indication: D2 lights up via PWM for TALA seconds.
-- **Why PWM6 (not CCP):** the PIC16F18875 has dedicated 10-bit PWM modules (**PWM6, PWM7**) and CCP modules that can also do PWM. PWM6 is the simplest: no capture/compare modes to configure. It needs a timer for its period, which is **Timer2**.
-- **Timer2 clock: LFINTOSC.** This is the important decision:
-  - If Timer2 ran from Fosc/4, it would **stop in sleep** (like synchronized Timer1, section 5). Then during the TALA seconds the system couldn't sleep, or the LED would freeze.
-  - On this PIC, Timer2 can be clocked from **LFINTOSC**, which keeps running in sleep, so the **PWM keeps going while the CPU sleeps**. That saves energy during alarms, and the main loop doesn't need a special case.
-  - To confirm on the hardware: start an alarm, check that D2 keeps lighting while the system is asleep.
-- **Period:** LFINTOSC ≈ 31 kHz, prescaler 1:1, period register PR2 = 255 → 31000 / 256 ≈ **121 Hz** (~8.3 ms).
-  - Above ~100 Hz, the eye doesn't see flicker, so it looks like a steady light.
-  - PR2 = 255 gives the full duty resolution.
-  - **How MCC shows it ("Timer Period" field):** MCC asks for the period as a *time*, not as PR2, and computes PR2 itself.
-    - **Formula:** period = (PR2 + 1) × prescaler × T_clk, with T_clk = 1 / 31 kHz = **32.258 µs** (one LFINTOSC tick).
-    - The range shown is **32.258 µs ≤ period ≤ 8.258065 ms**:
-      - minimum = PR2 = 0 → 1 tick = 32.258 µs;
-      - maximum = PR2 = 255 → 256 ticks = 256 × 32.258 µs = **8.258 ms**.
-    - "8.3 ms" is just above the maximum, so MCC clamps it to 8.258065 ms. The "Actual Period" is 8.258 ms, which means PR2 = 255, as intended. Entering 8.258065 ms directly gives the same result.
-    - Real frequency = 1 / 8.258 ms ≈ **121 Hz**. That's computed with LFINTOSC = exactly 31 kHz; the real LFINTOSC varies by a few %, so the real PWM frequency does too. That's irrelevant for an LED.
-    - A longer period would need a bigger prescaler (1:2 → max 16.5 ms ≈ 60 Hz). But below ~100 Hz the LED starts to flicker visibly, so 1:1 with the maximum period is the right choice.
-- **Duty 50%:** a clearly visible, medium-bright light. Changing it is one call (`PWM6_LoadDutyValue()`), which is a knob if the alarm should look brighter or dimmer.
-- **Off at startup:**
-  - PWM6 **not enabled** and Timer2 **not started** after init, so D2 stays dark until an alarm.
-  - The alarm code (B's `alarm_out.c`) starts Timer2 / enables PWM6 for TALA seconds, then stops them.
-  - Timer2 not running = no current wasted.
-- **Pin:**
-  - In the Pin Manager, **PWM6OUT → RA4** (D2) through PPS. The PPS mapping makes the PWM drive the pin instead of `LATA4`.
-  - RA4 stays an output.
-
-### EUSART (USART) at 9600 baud
-- **What it is:** the serial port (asynchronous: TX and RX lines, no clock line). The project adds communication over it later (part 2). For now we only configure it, so the pins and the baud rate are fixed early.
-- **Pins:** **TX = RC6, RX = RC7** (the EUSART defaults, and the mikroBUS 1 TX/RX lines, through 330 Ω resistors R39/R40 on the board).
-- **9600 baud at 4 MHz:**
-  - With BRG16 = 1 and BRGH = 1: SPBRG = 4 MHz / (4 × 9600) − 1 ≈ 103 → real baud 9615, **0.16 % error**. UART tolerates about ±2 %, so this is fine.
-  - Check the error % that MCC shows.
-- **Settings:**
-  - 8 data bits, no parity, 1 stop bit (8N1, the standard).
-  - Transmit and receive enabled.
-  - **Interrupts off** for now (decided when part 2 is designed).
-  - **No "Redirect STDIO"** (printf), because it costs code space we may need.
-- **Timing (README):** 9600 baud ≈ 1 ms per byte. That's why every task must stay short and non-blocking: later, the USART will need servicing about every ms.
+  - Each byte takes ~**4-5 ms**.
+  - The routine disables interrupts (GIE = 0), runs the unlock sequence (`0x55`, `0xAA`, `WR = 1`), and **waits until the write finishes** before restoring GIE.
+  - The unlock must not be interrupted, or the hardware refuses the write. That's a safety feature against accidental writes.
+- **Consequence:**
+  - During each write, the ISRs are delayed by a few ms. Timer1 keeps counting in hardware and its flag stays set, so **no second is lost**.
+  - The 12-byte config block blocks for ~50 ms. That's acceptable because it's rare, but write only the bytes that changed.
+- **Reading** is instant.
+- **Wear:** ~100k writes per cell (the README note about saving CLKM every minute).
 
 
-## 13. What MCC generated for EEPROM, PWM and EUSART
+## 10. PWM on D2 (Timer2 + PWM6)
 
-New files: `memory.c/h`, `tmr2.c/h`, `pwm6.c/h`, `eusart.c/h`. `SYSTEM_Initialize()` now also calls `PWM6_Initialize()`, `TMR2_Initialize()`, `EUSART_Initialize()`. `interrupt_manager.c` is unchanged, so none of these use interrupts.
-
-### EEPROM (`memory.c`)
-- `DATAEE_WriteByte(uint16_t addr, uint8_t data)` and `DATAEE_ReadByte(uint16_t addr)` take the **full address**: EEPROM byte n is at **0xF000 + n**. The README layout lists offsets, so e.g. the magic word (offset 0) is at 0xF000, and the records (offset 16) start at 0xF010.
-- `NVMREGS = 1` selects the EEPROM/config space (not program flash).
-- **The write confirms section 12:** GIE = 0, unlock `0x55`/`0xAA`, `WR = 1`, then `while (NVMCON1bits.WR)` waits ~4-5 ms **with interrupts off**, then GIE is restored. Reading is instant (two NOPs).
-
-### Timer2 (`tmr2.c`)
-- `T2CLKCON = 0x04` → **LFINTOSC**.
-- `T2PR = 0xFF` → PR2 = 255 → 8.258 ms ≈ 121 Hz.
-- `T2CON = 0x00` → prescaler 1:1, postscaler 1:1, **TMR2ON off** (stopped until an alarm).
-- `T2HLT = 0x00`:
-  - Software control (free-running, no external start/reset).
-  - Prescaler **not synchronized** to Fosc. That matters for sleep, same reason as Timer1 (section 5): a synchronized prescaler would stop when Fosc stops.
-
-### PWM6 (`pwm6.c`)
-- `PWM6CON = 0x00` → **PWM6EN disabled**, active-high.
-- `CCPTMRS1bits.P6TSEL = 1` → PWM6 uses **Timer2**.
-- **Duty:**
-  - `PWM6DCH = 0x7F`, `PWM6DCL = 0xC0`, so duty value = (0x7F << 2) | (0xC0 >> 6) = 508 + 3 = **511**.
-  - The full scale is 4 × (PR2 + 1) = 1024, so 511 / 1024 ≈ **50 %**.
-  - `PWM6_LoadDutyValue(0..1023)` changes it.
-- **Pin:** `RA4PPS = 0x0E` → RA4 outputs PWM6OUT (D2). While PWM6 is disabled its output is low, so D2 stays off. That's why D2 is dark and D5 still blinks.
-- **Turning the alarm light on/off later:** `TMR2_Start(); PWM6CONbits.PWM6EN = 1;` and `PWM6CONbits.PWM6EN = 0; TMR2_Stop();`.
-
-### EUSART (`eusart.c`)
-- `BAUD1CON = 0x08` → BRG16 = 1 (16-bit baud generator).
-- `TX1STA = 0x24` → TXEN on, asynchronous, BRGH = 1 (high speed).
-- `RC1STA = 0x90` → SPEN (serial port on), CREN (receive on), 8 bits.
-- `SP1BRG = 103` → 4 MHz / (4 × 104) = **9615 baud** (0.16 % error).
-- **Pins:**
-  - `RC6PPS = 0x10` → TX on RC6. `TRISC = 0xBF` → RC6 is an output.
-  - `RXPPS = 0x17` → RX read from RC7, which is digital (`ANSELC` bit 7 = 0) and an input.
-- Error handlers are only defaults; nothing is called by interrupts.
+- **PWM** = a square wave with a fixed period and a variable **duty cycle** (% of the time high). On an LED, a fast PWM looks like a steady light whose brightness is the duty. D2 lights this way for TALA seconds during an alarm.
+- **PWM6:** a dedicated 10-bit PWM module, simpler than a CCP module in PWM mode. Its period comes from **Timer2** (`CCPTMRS1bits.P6TSEL = 1`).
+- **Timer2 on LFINTOSC** (`T2CLKCON = 0x04`), prescaler **not synchronized** (`T2HLT = 0x00`):
+  - From Fosc/4, Timer2 would stop in sleep, so the alarm light would freeze, or the system couldn't sleep during alarms.
+  - From LFINTOSC (async), the **PWM keeps running while the CPU sleeps**.
+  - To confirm on the board: start an alarm and check that D2 stays lit while the system sleeps.
+- **Period:**
+  - The formula is period = (PR2 + 1) × prescaler × 32.258 µs (one LFINTOSC tick at 31 kHz).
+  - MCC asks for a time and shows the range **32.258 µs** (PR2 = 0) to **8.258 ms** (PR2 = 255). We use the maximum: `T2PR = 0xFF`, **≈ 121 Hz**.
+  - Above ~100 Hz the eye sees no flicker. Prescaler 1:2 would allow up to 16.5 ms, but that's ≈ 60 Hz, which flickers visibly.
+- **Duty 50 %:**
+  - `PWM6DCH:DCL` = 511 of 4 × (PR2 + 1) = 1024.
+  - Knob: `PWM6_LoadDutyValue(0..1023)`.
+- **Off at startup:** `PWM6EN = 0`, `TMR2ON = 0`. D2 stays dark and Timer2 draws nothing until an alarm.
+  - On: `TMR2_Start(); PWM6CONbits.PWM6EN = 1;`
+  - Off: `PWM6CONbits.PWM6EN = 0; TMR2_Stop();`
+- **Pin:** `RA4PPS = 0x0E`, so PWM6OUT drives RA4 instead of `LATA4`. While PWM6 is disabled, its output is low.
 
 
-## 14. `system.h` and `clock.c`: what they are for
+## 11. EUSART at 9600 baud
 
-### `system.h`: the shared contract
-- It's the one header everyone includes. It defines **the data shared between modules**, so B and C can write their code before A's exists, all using the same names and types.
-- It contains **declarations** (`extern ...`, types, `#define`s). The variables themselves are **defined once** in one `.c` file (e.g. `main.c`). A variable defined in a header would be duplicated in every file that includes it, and the linker would fail.
-- **What goes in it:**
+- The serial port (asynchronous: TX and RX, no clock line). It's used in part 2; for now it's only configured, so the pins and timing are fixed early.
+- **Pins:** TX = RC6 (`RC6PPS = 0x10`, output), RX = RC7 (`RXPPS = 0x17`, digital input). These are the EUSART defaults and the mikroBUS 1 UART lines.
+- **Baud:**
+  - BRG16 = 1, BRGH = 1, `SP1BRG = 103` → 4 MHz / (4 × 104) = **9615 baud**, 0.16 % error.
+  - UART tolerates about ±2 %.
+- **8N1** (8 data bits, no parity, 1 stop): the standard. TX and RX enabled (`TX1STA = 0x24`, `RC1STA = 0x90`).
+- **No interrupts, no printf redirection** for now (printf costs code space).
+- **Timing consequence:** 9600 baud ≈ **1 ms per byte**. Once the USART is in use, every task must stay short and non-blocking.
 
-  | Item | Type | Why |
+
+## 12. `system.h`: the shared contract
+
+- The one header every module includes. It fixes **the names and types of the data shared between modules**, so each module can be written independently.
+- **Declarations only** (`extern`, types, `#define`s). The variables are **defined once**, in `main.c`. A variable defined in a header would be duplicated in every file that includes it, and the link would fail.
+- **Contents:**
+
+  | Item | Type | Used for |
   |---|---|---|
-  | Current time | `struct { uint8_t h, m, s; }` | read by the UI/LCD, the records and the alarm clock check |
-  | Config parameters | `struct { pmon, tala, alaf, alah, alam, alas, alat, alal }`, all `uint8_t` | one byte each, same order as the EEPROM layout, so saving/loading is a byte copy |
-  | Last readings | `uint8_t last_t, last_l` | written by the monitor (B), shown by the UI (C) |
-  | Pending alarms | one byte with bits `ALARM_C`, `ALARM_T`, `ALARM_L` | set by the alarm checks, shown as letters, cleared by S1 |
-  | Records | `struct { uint8_t h, m, s, t, l; } records[4]` (Tmax, Tmin, Lmax, Lmin) | exactly the 5-byte EEPROM format |
-  | Event flags | `volatile uint8_t` tick counter / button flags | set by ISRs, consumed by the main loop |
-  | "Config changed" flag | `uint8_t` | the UI sets it, the main loop saves to EEPROM |
+  | `now` | `clock_time_t { h, m, s }` | LCD, records, alarm clock check |
+  | `cfg` | `config_t { pmon, tala, alaf, alah, alam, alas, alat, alal }` | same order as EEPROM offsets 1-8, so saving is a byte copy |
+  | `last_t`, `last_l` | `uint8_t` | latest readings |
+  | `alarms` | bits `ALARM_C`, `ALARM_T`, `ALARM_L` | pending alarms, shown as letters, cleared by S1 |
+  | `records[REC_COUNT]` | `record_t { h, m, s, t, l }` | max/min records (section 13) |
+  | `cfg_dirty` | `uint8_t` | the UI sets it, the main loop saves to EEPROM |
+  | `ticks` | `volatile uint8_t` | +1 per second from the Timer1 ISR |
+  | `s1_pressed`, `s2_pressed` | `volatile uint8_t` | set by the button ISRs |
 
-- **Why `uint8_t` everywhere:** it's an 8-bit CPU. Every value fits in a byte (hh ≤ 23, tt ≤ 50, l ≤ 7), and byte operations are single instructions, so they're fast and naturally atomic.
-- **One byte per ISR flag** (`s1_pressed`, `s2_pressed`), not bits packed into one `flags` byte:
-  - With a shared byte, the main loop clearing bit S1 (`flags &= ~FLAG_S1`) is a read-modify-write.
-  - If the S2 interrupt lands in the middle, it sets S2 in the byte, but the main loop then writes back its old copy, and the S2 press is lost.
-  - Separate bytes can't interfere with each other: setting one to 1 or 0 is a single instruction.
-  - `ticks` is a single byte for the same reason: `ticks++` in the ISR and `ticks--` in the main loop each compile to one instruction (`incf`/`decf`) on this PIC.
-- **`volatile`:** any variable written in an ISR and read in the main loop must be `volatile`. Otherwise the compiler may keep a copy in a register and never see the ISR's change (e.g. `while (!flag);` loops forever).
-- **Rule:** it's shared, so any change has to be announced to the group (README).
+- **`uint8_t` everywhere:** 8-bit CPU, and every value fits in a byte. Byte operations are single instructions: fast and atomic.
+- **One byte per ISR flag:**
+  - If S1 and S2 were bits in one byte, clearing S1 in the main loop (`flags &= ~FLAG_S1`) would be a read-modify-write. An S2 interrupt in the middle would be overwritten and lost.
+  - Separate bytes can't interfere. `ticks++` (ISR) and `ticks--` (main loop) are one instruction each (`incf`/`decf`).
+- **`volatile`:** required for anything written in an ISR and read in the main loop. Otherwise the compiler can keep a stale copy in a register (`while (!flag);` would loop forever).
+- **Only shared things belong here.** A constant used by one module stays in that module, e.g. `STABLE_PERIODS` in `buttons.c`. Changing it then touches one file and doesn't change the contract.
+- Since it's shared, every change to `system.h` is announced to the group.
 
-### `clock.c`: the time of day
-- **Job:** keep hh:mm:ss from the 1 s Timer1 interrupt, with rollover (59 s → 0 and minute + 1; 59 min → 0 and hour + 1; 23 h → 0), and allow setting the time.
+
+## 13. `records`: max/min with timestamps
+
+- **What the project asks for:** the **maximum and minimum** temperature and luminosity seen so far, each with the **time it happened**.
+  - They survive power cycles (EEPROM offsets 16-35).
+  - S2 shows them (T max/min for 1 s, then L max/min for 1 s).
+  - The **R** option in config mode clears them.
+- **One record = 5 bytes = `{ h, m, s, t, l }`:** the event's time plus **both** readings at that moment. For example, Tmax = "at 14:32:05 the temperature was 31 °C, the highest so far, and the luminosity then was 5".
+
+  | Entry | Replaced when a new reading has |
+  |---|---|
+  | `records[REC_TMAX]` | T > stored `t` |
+  | `records[REC_TMIN]` | T < stored `t` |
+  | `records[REC_LMAX]` | L > stored `l` |
+  | `records[REC_LMIN]` | L < stored `l` |
+
+  On a replacement, all 5 bytes get the current time and readings.
+- **Array + enum instead of 4 variables:**
+  - EEPROM stores the 4 records back to back (4 × 5 = 20 bytes), so saving/loading is one loop, and record i is at `0xF000 + 16 + 5·i`.
+  - `REC_COUNT` keeps the size and the names in sync.
+- **Reset value** (after R or invalid EEPROM): max `t`/`l` = 0, min `t`/`l` = 255, so the next real reading replaces all four.
+
+
+## 14. `clock.c`: the time of day
+
 - **Functions:**
-  - `clock_init(h, m)`: start from CLKH/CLKM loaded from EEPROM, seconds = 0. After a power cycle, the clock continues from the last saved minute.
-  - `clock_tick()`: advance one second with rollover. It returns/flags when the **minute** changes, because the minute change is when CLKH/CLKM get saved to EEPROM.
-  - `clock_set(h, m, s)`: used by the UI in config mode.
-- **Design decision: the ISR only counts, the main loop advances the time.**
-  - Timer1 ISR: `ticks++` (one instruction). The main loop: `while (ticks) { ticks--; clock_tick(); ... }`.
-  - **Why not update hh:mm:ss inside the ISR** (as first sketched in the README architecture):
-    - **Torn reads:** the time is 3 bytes. If the ISR changes them while the main loop is reading them (e.g. copying them to the LCD at 12:59:59 → 13:00:00), the main loop can get a mix like 12:00:00 or 13:59:59. With the ISR only counting, the time is changed only by the main loop, so this can't happen.
-    - **`clock_set()` races:** same problem the other way around. The UI writing h/m/s while the ISR increments them.
-    - **Matches the cyclic executive rule:** ISRs only update counters and set flags (README).
-  - **No second is lost** even if the main loop is busy (an EEPROM write, an LCD update): the counter accumulates, and the loop catches up on the next pass.
-  - The main loop runs after every wake-up anyway (the Timer1 interrupt wakes the CPU), so the clock still advances during sleep periods.
-- **"Setting the clock doesn't stall the seconds"** (a requirement and a test): `clock_set()` only changes the variables. Timer1 is never stopped or reloaded, so the ticks keep coming at the same rate.
-- **Testing the rollover logic:** `clock_tick()` is plain C with no hardware access, so it can be compiled and tested on the PC with gcc (e.g. 86400 ticks from 00:00:00 must come back to 00:00:00, and 23:59:59 + 1 = 00:00:00). That's faster than waiting on the board.
-
-
-## 15. The `records` variable
-
-- **What the project asks for:** keep the **maximum and minimum** temperature and luminosity seen so far, each with the **time it happened**. They survive power cycles (EEPROM offsets 16-35), are shown with S2 (T max/min for 1 s, then L max/min for 1 s), and are cleared with the **R** option in config mode.
-- **One record = 5 bytes = `record_t { h, m, s, t, l }`:** the time of the event plus **both** readings at that moment. For example, the Tmax record says "at 14:32:05 the temperature was 31 °C (the highest so far), and the luminosity at that moment was 5". The project statement defines the record this way (h, m, s, T, L).
-- **`records[4]`, indexed by the enum:**
-
-  | Index | Name | Updated when |
-  |---|---|---|
-  | 0 | `records[REC_TMAX]` | a new reading has T > the stored `t` |
-  | 1 | `records[REC_TMIN]` | T < the stored `t` |
-  | 2 | `records[REC_LMAX]` | L > the stored `l` |
-  | 3 | `records[REC_LMIN]` | L < the stored `l` |
-
-  On each update, the whole record (time + T + L) is overwritten with the current values.
-- **Why an array + enum instead of 4 separate variables:**
-  - The EEPROM layout stores the 4 records back to back: 4 × 5 = 20 bytes, offsets 16-35. With an array, saving/loading is one loop over 20 bytes in memory order, and the address of record i is `0xF000 + 16 + 5·i`.
-  - `REC_COUNT` (= 4) is the array size, so the size and the names always agree.
-- **Who uses it:**
-  - B (`monitor.c`) updates it after each reading.
-  - C (`ui.c`) displays it.
-  - B (`nvm.c`) saves/loads it.
-  - The R option (C) resets it.
-- **Reset value:** after R (or invalid EEPROM), the next reading should become all four records. A simple way is to set max `t`/`l` to 0 and min `t`/`l` to 255, so any real reading replaces them.
-
-### Build check
-- `system.h` + `main.c` compile together with all MCC files with XC8 v3.10 (PIC16F18875, DFP 1.24.387): no errors.
-- The only warnings come from the generated files: implicit conversions, and "function is never called" for driver functions we don't use yet. They're harmless, and we don't edit generated files.
-
-
-## 16. `clock.c` in detail
-
-- **Files:** `clock.h` (the 3 function declarations) and `clock.c`. It uses the shared `now` from `system.h`; it doesn't own its own copy, because the LCD, the records and the alarm check all read `now`.
+  - `clock_init(h, m)` starts at h:m:00, from CLKH/CLKM in EEPROM, so after a power cycle the clock continues from the last saved minute.
+  - `clock_set(h, m, s)` is used by the config menu.
+  - `clock_tick()` adds one second.
+- **Design: the ISR only counts, the main loop advances the time.**
+  - Timer1 ISR: `ticks++`. Main loop: `while (ticks) { ticks--; clock_tick(); ... }`.
+  - **Why not update hh:mm:ss in the ISR:**
+    - The time is 3 bytes. If the ISR changes them while the main loop copies them (e.g. at 12:59:59 → 13:00:00), the loop can read a mix like 13:59:59 ("torn read").
+    - `clock_set()` writing while the ISR increments has the same problem.
+    - With the ISR only counting, only the main loop touches the time, so neither can happen.
+    - It's also the cyclic-executive rule: ISRs only count and set flags.
+  - **No second is lost** when the main loop is busy (EEPROM write, LCD update): `ticks` accumulates, and the loop catches up.
+  - The Timer1 interrupt wakes the CPU every second, so the clock advances during sleep periods too.
 - **`clock_tick()`:**
-  - `if (++now.s < 60) return 0;` increments first, then compares. 59 → 60 fails the test and falls through to the rollover.
-  - The rollover goes in a chain: seconds 60 → 0 and minute + 1; minutes 60 → 0 and hour + 1; hours 24 → 0.
-  - **Return value 1 = "the minute changed".** That's the moment to save CLKH/CLKM to EEPROM (the requirement: hh:mm survive a power cycle). It's returned instead of saving inside `clock_tick()`, so `clock.c` stays pure logic (no EEPROM, no hardware), and saving is the main loop's decision. That also makes it testable on the PC.
-  - `>=` instead of `==` in the minute/hour checks: if a bad value ever got in (e.g. h = 30), it still rolls back to a valid range instead of counting up to 255.
-- **`clock_set()`:**
-  - It only writes the 3 variables and **never touches Timer1**, so the seconds keep coming at the same rate ("setting the clock doesn't stall the seconds").
-  - The sub-second phase isn't reset: after setting the time, the next second can come anywhere between 0 and 1 s later. That's acceptable for a clock with no displayed fractions of a second.
-- **`clock_init(h, m)`:** starts at h:m:00, with the values that come from EEPROM (CLKH/CLKM). Until B's `nvm.c` exists, it's called with the defaults (0, 0).
-- **Wiring in `main.c`:**
-  - The Timer1 handler becomes just `ticks++;`.
-  - The main loop runs `while (ticks) { ticks--; ... clock_tick() ... }`.
-  - The D5 blink moves from the ISR into that loop. It's "work", so by the cyclic-executive rule it belongs in the main loop, and if D5 blinks, it proves the whole chain ISR → counter → main loop works.
-- **The PC test (`project.X/test/test_clock.c`, not part of the MPLAB project):**
-  - 23:59:59 + 1 s = 00:00:00, with "minute changed" = 1.
-  - A normal second returns 0.
-  - 86400 ticks (one day) from 12:00:00 come back to 12:00:00, with exactly 1440 minute changes.
-  - Run it with `gcc -I. test/test_clock.c clock.c -o test_clock && ./test_clock` from `project.X/`. It prints `clock ok`, or stops at the first failing `assert`.
-  - The test defines its own `now`, because on the PC there's no `main.c` to provide it.
-- **Verified:**
-  - The project builds with XC8 v3.10: program memory **591 of 8192 words (7.2 %)**, data memory **91 of 1024 bytes (8.9 %)**. That's plenty of room left.
-  - The PC test passes (`clock ok`).
-  - D5 blinks as before on the board.
+  - `if (++now.s < 60) return 0;` increments, then compares. Then it chains the rollovers: seconds 60 → 0 and minute + 1; minutes 60 → 0 and hour + 1; hours 24 → 0.
+  - **Returns 1 when the minute changes:** that's when CLKH/CLKM get saved. Returning it instead of saving keeps `clock.c` pure logic (no hardware), so it can be tested on the PC, and saving is the main loop's decision.
+  - `>=` instead of `==`: a bad value (e.g. h = 30) still rolls back to a valid range instead of counting to 255.
+- **`clock_set()` never touches Timer1**, so setting the clock doesn't stall the seconds (a requirement). The sub-second phase isn't reset: the next second comes 0-1 s later, which is fine with no fractions displayed.
+- **The D5 toggle is in the main loop, not the ISR:** it's work, and it proves the whole ISR → counter → main loop chain.
+- **PC test:**
+  - `gcc -I. test/test_clock.c clock.c` checks 23:59:59 + 1 = 00:00:00 (minute changed), a normal second (no minute change), and 86400 ticks = one day, with exactly 1440 minute changes.
+  - The test defines its own `now`, because there's no `main.c` on the PC.
 
 
-## 17. Startup delay and the button flags
+## 15. Buttons: flags and debouncing (`buttons.c`)
 
-### Why D5 takes a while to start blinking after power-up
-There are two delays, and they add up:
-1. **The first toggle comes after a full second.** `PIN_MANAGER_Initialize()` starts every LED at 0 (`LATA = 0x00`), and Timer1 starts from its preload, so the first overflow (and the first toggle) arrives **1 s after the program starts**. Until then, D5 is just off. That's normal behaviour, not a delay in the program.
-2. **The board's own debugger starts first.** On the Curiosity HPC, the onboard debugger (PKOB4) controls the target's power. When you plug in USB, it boots and then switches on the PIC's supply, which can take a second or two. Only then does our program begin.
-- **How to tell them apart:** if the gap is about 1 s, it's (1). If it's longer, it's mostly (2). Either way, nothing is wrong with our code.
-- **If an immediate sign of life is wanted:** turn D5 on in `main()` right after the init. Then it lights the moment the program starts, and the first toggle turns it off 1 s later.
+### The problem: bounce
+- A mechanical contact bounces for a few ms, on press **and on release**. Each bounce can be a falling edge, i.e. another IOC interrupt.
+- So one press can count twice, and even a release can count as a press.
 
-### The button flags in `main.c`
-- **The chain:** a press pulls RB4/RC5 low → IOC sets `IOCBF4`/`IOCCF5` → `INTERRUPT_InterruptManager()` → `PIN_MANAGER_IOC()` → `IOCBF4_ISR()` → **our callback** → then MCC clears the flag (`IOCBFbits.IOCBF4 = 0`).
-- **Our callbacks only set a flag:** `s1_pressed = 1;`. They do no processing in the ISR (cyclic executive rule). The main loop sees the flag, clears it, and handles the press.
-- **Clearing in the main loop:** `s1_pressed = 0` is a single instruction. Since each button has its own byte (section 14), it can't wipe out the other button's flag.
-- **Bounce:** a mechanical button bounces, so one press can make several falling edges in a few ms, i.e. several interrupts. The flag is just set to 1 again, so it doesn't pile up, but if the main loop handles the flag between two bounces, **one press can count twice**. That's what **debouncing** fixes: after a press, ignore that button for ~20-50 ms. Debouncing is C's job (`buttons.c`). The raw flags are the input it starts from.
-- **Temporary test:** toggling D3 on S1 and D4 on S2 proves the whole chain works. If a LED sometimes toggles twice on one press, you're seeing bounce. It's a useful thing to see before C writes the debounce, and a good point for the report.
-- **Later:** IOC also **wakes the PIC from sleep**, so a button press will work even while the system sleeps (`power.c`).
+### Options considered
+
+| Option | Verdict |
+|---|---|
+| Delay inside the ISR | **No:** it blocks every other interrupt (the 1 s tick too). No delays in ISRs. |
+| `__delay_ms(30)` in the main loop after a press | Works, but **blocks** the main loop for 30 ms. That breaks "all tasks short and non-blocking", which matters once the USART needs servicing every ~1 ms. |
+| Capacitor on the button (RC filter) | Not possible: no extra parts, and the board has none there. |
+| **Non-blocking lockout with a timer** | **Chosen:** no waiting anywhere, and the CPU can even sleep during the lockout. |
+
+### The chosen design
+- **Press:** the IOC callback sets `s1_pressed = 1` (or S2), then **locks both buttons** and starts Timer0. While locked, IOC from either button is ignored.
+- **Every 40 ms while locked** (Timer0 interrupt):
+  - If either pin reads low (held or bouncing), the stable count goes back to 0.
+  - If both read high, it counts one stable period. After **2 in a row**, Timer0 stops and the buttons unlock.
+- **Why 2 stable periods:** the release bounces too. One high reading could fall inside a release bounce, and the next bounce would count as a new press. Two high readings 40 ms apart mean the contact has settled (bounce is < ~20 ms).
+- **One lock for both buttons:** one timer, one state. Pressing S1 and S2 within ~80 ms of each other isn't needed by the UI (its windows are 1-2 s).
+- **Timing:** a tap locks for ~80 ms after release, a held button for as long as it's held + ~80 ms.
+- **Knobs:** `STABLE_PERIODS` in `buttons.c`, and the Timer0 period in MCC.
+- **`locked` / `stable` are `static`, not `volatile`:** only ISR code touches them. On a PIC16, interrupts can't interrupt each other, so the IOC and Timer0 callbacks never run at the same time.
+- **The Timer0 logic sits in the ISR:** it's a few instructions (read 2 pins, compare, count), so it's still short, and moving it to the main loop would need another flag.
+- **The main loop doesn't change:** it still just consumes `s1_pressed` / `s2_pressed`.
+
+### Timer0 settings
+- **LFINTOSC, asynchronous** (`T0CON1 = 0x93`, `T0ASYNC = 1`):
+  - It runs in sleep, so the lockout ends even while the CPU sleeps, and its interrupt wakes it.
+  - Synchronized, it would freeze in sleep (as in section 5), and the buttons would stay locked.
+- **8-bit mode, prescaler 1:8:** one tick = 8 / 31 kHz ≈ 258 µs, so the max period is ≈ 66 ms. `TMR0H = 154` → (154 + 1) × 258 µs ≈ **40 ms**.
+  - In 8-bit mode, Timer0 counts up to `TMR0H`, then restarts at 0 and sets its flag, so it interrupts every 40 ms until stopped.
+  - `TMR0_WriteTimer(0)` before starting makes the first period a full 40 ms.
+- **Off at startup** (`T0CON0 = 0x00`): it only runs during a lockout.
 
 
-## 18. `power.c`: sleeping when there's nothing to do
+## 16. `power.c`: sleep when idle
 
-- **Goal (energy requirement):** the CPU runs only when there's work. Otherwise `SLEEP()`: the CPU clock (HFINTOSC 4 MHz) stops, and current drops from ~mA to µA. Things that keep running in sleep:
-  - Timer1 (LFINTOSC, async, section 5);
-  - IOC on the buttons;
-  - Timer2/PWM6 when running (LFINTOSC, section 12).
-- **What wakes the CPU:** any interrupt whose **enable bit** is set: the Timer1 overflow every second (`TMR1IE`) and a button press (`IOCIE`). After waking, execution continues right after `SLEEP()`.
-- **What blocks sleep (`busy()`):** work the main loop hasn't handled yet: `ticks > 0`, `s1_pressed`, `s2_pressed`. Later modules may add more, e.g. a debounce in progress.
+- **Goal:** the CPU runs only when there's work. Otherwise `SLEEP()`: the 4 MHz clock stops, and current drops from mA to µA.
+- **Still running in sleep:** Timer1 (the 1 s tick), Timer0 (debounce lockout), Timer2/PWM6 (alarm light). All of them run asynchronously from LFINTOSC. IOC also works in sleep.
+- **What wakes the CPU:** any interrupt whose enable bit is set: Timer1, IOC, Timer0. Execution continues right after `SLEEP()`.
+- **What blocks sleep (`busy()`):** work the main loop hasn't handled yet (`ticks`, `s1_pressed`, `s2_pressed`).
 - **The race, and why GIE is turned off around the check:**
-  - Without protection: the main loop checks "no work", then **an interrupt sets a flag**, then `SLEEP()` runs. The CPU sleeps with work pending, and the press is only handled at the next wake-up (up to 1 s late).
-  - **With `GIE = 0` first:** interrupts can't run the ISR between the check and `SLEEP()`. But on this PIC, an interrupt **still wakes the CPU** when GIE = 0 (only the enable bit matters for waking). And if a flag is already set when `SLEEP()` executes, `SLEEP()` behaves like a `NOP` and doesn't sleep at all.
-  - After `SLEEP()`: `NOP()` (recommended after SLEEP, the instruction right after it is pre-fetched), then `GIE = 1`. The pending interrupt is serviced immediately, the flag gets set, and the main loop handles it on the next pass.
-  - So nothing can be missed. The check and the sleep act as one indivisible step.
-- **`VREGPM = 1` (in `power_init()`):**
-  - The PIC16F18875 ("F" version) has an internal voltage regulator. `VREGCON.VREGPM = 1` puts it in **low-power mode during sleep**, which lowers the sleep current considerably.
-  - **Trade-off:** waking up takes a bit longer (the regulator has to come back to full power). That's microseconds, irrelevant for a 1 s tick and human button presses.
-- **What's already low-power without extra code:** unused pins are left **analog** (`ANSEL = 1`, MCC's default), which disconnects their digital input buffers, so floating unused pins don't draw current.
-- **Possible further savings (knobs for the report):**
-  - turning the ADC off between readings (section 11);
-  - disabling unused modules with the `PMD` registers;
-  - the TC74's standby mode between readings (B).
-- **Debugging note:** sleep behaves differently under the debugger. Test it with **Make and Program Device**, not Debug.
-- **How to measure the gain (for the report):**
-  - Measure the board current with `power_sleep_if_idle()` and without it (comment it out).
-  - The onboard debugger also draws current, so measure the **difference**, or measure the target supply alone if possible.
-  - Write both numbers down (README test list).
+  - Without protection: the loop checks "no work", then an interrupt sets a flag, then `SLEEP()` runs. The CPU sleeps with work pending, up to 1 s late.
+  - With `GIE = 0`, no ISR can run between the check and `SLEEP()`. On this PIC, an interrupt **still wakes the CPU with GIE = 0**, and if a flag is already set, `SLEEP()` acts as a `NOP`.
+  - After waking: `NOP()` (recommended after SLEEP), then `GIE = 1`. The pending interrupt is serviced immediately, and the loop handles it on the next pass. Nothing can be missed.
+- **`VREGPM = 1`:** the internal voltage regulator goes into low-power mode during sleep, which lowers the sleep current considerably. The cost is a slightly slower wake-up (µs), which is irrelevant here.
+- **Further savings (knobs for the report):**
+  - ADC off between readings (section 8);
+  - `PMD` registers to disable unused modules;
+  - TC74 standby mode between readings.
+- **Measuring (for the report):**
+  - Measure the board current with and without `power_sleep_if_idle()`. The onboard debugger also draws current, so the **difference** is what counts.
+  - Use **Make and Program Device**, not Debug: sleep behaves differently under the debugger.
 
 
-## 19. Debouncing the buttons: options
+## 17. Hardware stack depth
 
-**The problem:** a press (and also a **release**) makes the contact bounce for a few ms. Each bounce is a falling edge, so it triggers IOC. Release bounce matters too: the contact opening can jitter low→high→low, and every high→low is a falling edge, so even releasing the button can count as a press.
-
-| Option | How | Verdict |
-|---|---|---|
-| Delay in the ISR | `__delay_ms(30)` inside the IOC callback | **No.** It blocks every other interrupt (the Timer1 tick too) and breaks the "no delays in ISRs" rule. |
-| Delay in the main loop | after handling a press: `__delay_ms(30)`, then clear the flag again to discard the bounces | **Works and is simple, but it's blocking.** The main loop does nothing for 30 ms. The clock is safe (`ticks` accumulates), but it breaks "all tasks short and non-blocking", which matters once the USART needs servicing about every 1 ms (part 2). OK as a temporary test only. |
-| Hardware RC filter | a capacitor on the button line | Not possible: no extra parts allowed, and the board has no capacitor there (only 10 kΩ pull-up + 1 kΩ series, section 4). |
-| **Non-blocking lockout with a timer** | on a press, accept it, then **ignore that button for ~30-50 ms** (turn off its IOC or ignore its flag); a timer ends the lockout. After it ends, only accept a new press if the pin reads **high** (released). | **Best.** No waiting anywhere, and the CPU can even sleep during the lockout. |
-
-**Implementing the lockout:**
-- It needs a **ms time base**. Timer1 only ticks every 1 s, too coarse.
-- **Timer0** is free. Clocked from **LFINTOSC**, it keeps running in sleep, so it can wake the CPU when the lockout ends, and the system still sleeps while waiting.
-- One-shot use: start it on a press, and its interrupt ends the lockout.
-- 30-50 ms: long enough for typical bounce (< 10-20 ms), short enough that a human double-press still works.
-
-**Ownership:** debouncing is part of C's `buttons.c` (README). The raw flags in `main.c` are A's part, and they're what C's debounce starts from.
-
-### Chosen design: shared lockout with Timer0
-- **On a press:** accept it (`s1_pressed = 1`), then **lock both buttons** and start Timer0. While locked, IOC interrupts from either button are ignored, so the bounces of that press and its release can't count.
-- **Every Timer0 period (~40 ms) while locked:**
-  - If either button still reads **low** (held, or bouncing) → keep waiting, and the "stable" count goes back to 0.
-  - If both read **high** → count one stable period. After **2 stable periods in a row** (≥ 40 ms after release), unlock and stop Timer0.
-- **Why "2 stable periods":** the release also bounces. If we unlocked at the first high reading, that reading could fall in the middle of a release bounce, and the next bounce would count as a new press. Two consecutive high readings 40 ms apart mean the contact has settled (bounce lasts < ~20 ms).
-- **Why one lock for both buttons:** one timer, one state, simpler. Pressing S1 and S2 within ~80 ms of each other isn't something the UI needs (its timings are 1-2 s).
-- **Why the Timer0 logic sits in the ISR:** it's a few instructions (read 2 pins, compare, count), so it's still short. Doing it in the main loop would need yet another flag, plus the main loop waking for it anyway.
-- **Timer0 setup:**
-  - Clock **LFINTOSC**, **asynchronous** (`T0ASYNC = 1`), so it runs in sleep and its interrupt wakes the CPU (the same idea as Timer1, section 5). The system keeps sleeping during the lockout.
-  - **8-bit mode, prescaler 1:8:** one tick = 8 / 31 kHz ≈ 258 µs, max period 256 × 258 µs ≈ 66 ms. **40 ms** fits.
-  - **Not started at init**, because it runs only during a lockout. That costs no current otherwise.
-
-### What MCC generated for Timer0 (first try), and the warnings
-- **The generation log:** every file says "Success". "Auto-merged" (mcc.c, interrupt_manager.c) means MCC added Timer0 to files it already owned, which is normal. "User edits maintained" for `main.c` means our code was kept.
-- **The warnings in MCC's internal log** (`~/.mcc/log/mcclog.log`) are about MCC itself, not our configuration:
-  - `Key "TMR2%c%TMODE" is missing value`: an internal GUI field without a default.
-  - `Invalid value "0 s" ... TMR0 CallbackFuncRate`: a GUI label.
-  - `Cannot switch to silent mode`, `painter... takes too long`: the IDE.
-  - None of them change the generated code.
-- **The real problem was in the generated values, not in a warning:**
-  - `T0CON1 = 0x83` means `T0CS = LFINTOSC`, `T0CKPS = 1:8`, but **`T0ASYNC = synchronised`** (bit 4 = 0). "Enable Synchronization" was still ticked.
-  - A synchronised Timer0 is clocked through the CPU clock, so it **stops in sleep** (same reason as Timer1, section 5).
-  - The lockout would then freeze while the CPU sleeps. Timer0 would only advance during the short wake-ups, so the buttons would stay locked for a very long time.
-  - **Fix:** untick "Enable Synchronization" in TMR0 and regenerate. The result must be `T0CON1 = 0x93` (bit 4 `T0ASYNC = 1`).
-- **The rest is correct:**
-  - `TMR0H = 0x9A` = 154 → (154 + 1) × 8 / 31 kHz ≈ **40 ms**.
-  - `TMR0IE = 1`.
-  - `T0CON0 = 0x00` → 8-bit mode, **timer off at start**.
-  - In 8-bit mode, Timer0 counts from `TMR0L` up to `TMR0H`, then goes back to 0 and sets the flag. So once started, it interrupts every 40 ms until stopped.
-  - The ISR doesn't reload anything, so `TMR0_WriteTimer(0)` before `TMR0_StartTimer()` makes the first period a full 40 ms.
-- **Second try (after unticking "Enable Synchronization"):** `T0CON1 = 0x93`, so `T0ASYNC = 1` and Timer0 now runs in sleep. The rest is unchanged (40 ms, interrupt enabled, timer off at start). The project builds (745 words, 9.1 %).
-- **Note:** generating Timer0 alone doesn't debounce anything yet. Timer0 stays off until `buttons.c` starts it on a press. Any change in how often the bounce shows up before that is chance: bounce depends on how the button is pressed.
-
-
-## 20. Hardware stack depth (found on the `silveira/partC` branch)
-
-- **The warning:** `(1393) possible hardware stack overflow detected; estimated stack depth: 18`, from building master + the LCD branch.
-- **What it means:**
-  - The PIC16F18875 keeps return addresses in a **hardware stack of only 16 levels**. Every function call uses one level, and an interrupt uses one more on top of whatever main was doing.
-  - The compiler estimates that the deepest chain (main → … → LCD → I2C driver functions, plus an interrupt arriving at the deepest point) needs 18.
-  - If that really happens, the oldest return address is overwritten, and the program returns to the wrong place (a crash or reset; `STVREN = ON` makes a stack overflow cause a reset).
-- **Why it can happen here:** the MCC I2C driver is several calls deep (the example helpers → `I2C1_Open`/`I2C1_MasterOperation` → the state machine → its state functions), and the LCD code adds its own levels on top.
-- **Fixes, if it stays:**
-  - Fewer nested calls in the LCD path, e.g. one function that sends a byte directly instead of `lcd_putc` → `write_byte` → `write_nibble` → I2C helper → driver.
-  - Or call the I2C driver one level less deep.
-  - The compiler's call graph (in the `.map`/listing) shows the exact chain.
-- **Status:** it only appears with the LCD branch. Master alone builds without it.
-
-
-## 21. `buttons.c` in detail
-
-- **What moved where:** the two press callbacks (`s1_isr`, `s2_isr`) and their registration moved from `main.c` to `buttons.c`. `main.c` only calls `buttons_init()`. The main loop is unchanged: it still consumes `s1_pressed`/`s2_pressed` (it doesn't care how they're produced).
-- **State:**
-  - `locked`: 1 while presses are ignored.
-  - `stable`: how many Timer0 periods in a row both buttons have read high.
-  - They're `static`, so private to `buttons.c`.
-  - **Not `volatile`:** they're only read and written inside ISRs. On a PIC16, interrupts can't interrupt each other (one priority level), so the IOC and Timer0 callbacks never run at the same time, and the main loop never touches these variables. `volatile` is only needed for data shared between ISR and main loop.
-- **`lock()`:**
-  - `TMR0_WriteTimer(0)` resets the count, so the first check is a full 40 ms after the press.
-  - `TMR0_StartTimer()` turns it on.
-- **`tmr0_isr()`, every 40 ms while locked:**
-  - Pins are active low (section 4): `SW1_GetValue() == 0` means pressed.
-  - If either is pressed, the button is still held or bouncing, so `stable = 0`.
-  - Otherwise `++stable`. At `STABLE_PERIODS` (2), Timer0 stops and `locked = 0`.
-- **Timing:**
-  - A short tap is locked for about 80 ms after release.
-  - A held button stays locked as long as it's held, plus about 80 ms.
-  - So a real second press needs a gap of more than ~80 ms, which is far faster than the UI needs (its windows are 1-2 s).
-- **Why `STABLE_PERIODS` is in `buttons.c`, not `system.h`:**
-  - `system.h` is the **shared contract**: only things more than one module uses (shared data, alarm bits, record indexes).
-  - `STABLE_PERIODS` is used only inside `buttons.c`. It's an internal detail of how debouncing works.
-  - Keeping it local means changing it touches one file, needs no announcement to the group (the `system.h` rule), and recompiles only `buttons.c`.
-  - **The general rule:** put a constant next to its only user. Move it to a header only when a second module needs it.
-- **Knobs:**
-  - `STABLE_PERIODS` (how many quiet periods);
-  - the Timer0 period in MCC (40 ms).
-  - If a bounce still slips through, raise either one.
-- **Sleep:** Timer0 is asynchronous on LFINTOSC, so the lockout ends even while the CPU sleeps. Nothing in `power.c` has to change.
-- **Stack:** the deepest new chain is ISR → `PIN_MANAGER_IOC` → `IOCBF4_ISR` → `s1_isr` → `lock` → `TMR0_WriteTimer`, a few levels. The build shows no stack warning (820 words, 10 %).
+- **The limit:** the PIC16F18875 keeps return addresses in a **hardware stack of 16 levels**. Every function call uses one level, and an interrupt adds one more (plus the ISR's own calls) on top of whatever main was doing.
+- **The compiler warning** `(1393) possible hardware stack overflow detected; estimated stack depth: N` means the deepest chain plus an interrupt at the worst moment needs N > 16.
+- **What happens on overflow:** the oldest return address is overwritten. With `STVREN = ON`, the PIC resets. It may work in testing and fail only when an interrupt hits the deepest point.
+- **The usual culprit:** the LCD → I2C path. The MCC I2C driver is already several calls deep (example helper → `I2C1_Open`/`I2C1_MasterOperation` → state machine → state function), and LCD functions on top (`lcd_putc` → byte → nibble → I2C helper) add more.
+- **Fixes:**
+  - Fewer nested calls in the LCD send path (e.g. one function that sends a byte directly).
+  - Keep ISR callbacks shallow.
+  - The compiler's call graph (in the map/listing files) shows the exact chain.
+- **Current state of master:** no warning. The deepest ISR chain is ISR → `PIN_MANAGER_IOC` → `IOCBF4_ISR` → `s1_isr` → `lock` → `TMR0_WriteTimer`.
