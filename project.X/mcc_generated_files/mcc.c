@@ -57,6 +57,7 @@ void SYSTEM_Initialize(void)
     ADCC_Initialize();
     TMR2_Initialize();
     TMR1_Initialize();
+    TMR0_Initialize();
     EUSART_Initialize();
 }
 

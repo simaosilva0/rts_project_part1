@@ -617,3 +617,37 @@ There are two delays, and they add up:
 - 30-50 ms: long enough for typical bounce (< 10-20 ms), short enough that a human double-press still works.
 
 **Ownership:** debouncing is part of C's `buttons.c` (README). The raw flags in `main.c` are A's part, and they're what C's debounce starts from.
+
+### Chosen design: shared lockout with Timer0
+- **On a press:** accept it (`s1_pressed = 1`), then **lock both buttons** and start Timer0. While locked, IOC interrupts from either button are ignored, so the bounces of that press and its release can't count.
+- **Every Timer0 period (~40 ms) while locked:**
+  - If either button still reads **low** (held, or bouncing) → keep waiting, and the "stable" count goes back to 0.
+  - If both read **high** → count one stable period. After **2 stable periods in a row** (≥ 40 ms after release), unlock and stop Timer0.
+- **Why "2 stable periods":** the release also bounces. If we unlocked at the first high reading, that reading could fall in the middle of a release bounce, and the next bounce would count as a new press. Two consecutive high readings 40 ms apart mean the contact has settled (bounce lasts < ~20 ms).
+- **Why one lock for both buttons:** one timer, one state, simpler. Pressing S1 and S2 within ~80 ms of each other isn't something the UI needs (its timings are 1-2 s).
+- **Why the Timer0 logic sits in the ISR:** it's a few instructions (read 2 pins, compare, count), so it's still short. Doing it in the main loop would need yet another flag, plus the main loop waking for it anyway.
+- **Timer0 setup:**
+  - Clock **LFINTOSC**, **asynchronous** (`T0ASYNC = 1`), so it runs in sleep and its interrupt wakes the CPU (the same idea as Timer1, section 5). The system keeps sleeping during the lockout.
+  - **8-bit mode, prescaler 1:8:** one tick = 8 / 31 kHz ≈ 258 µs, max period 256 × 258 µs ≈ 66 ms. **40 ms** fits.
+  - **Not started at init**, because it runs only during a lockout. That costs no current otherwise.
+
+### What MCC generated for Timer0 (first try), and the warnings
+- **The generation log:** every file says "Success". "Auto-merged" (mcc.c, interrupt_manager.c) means MCC added Timer0 to files it already owned, which is normal. "User edits maintained" for `main.c` means our code was kept.
+- **The warnings in MCC's internal log** (`~/.mcc/log/mcclog.log`) are about MCC itself, not our configuration:
+  - `Key "TMR2%c%TMODE" is missing value`: an internal GUI field without a default.
+  - `Invalid value "0 s" ... TMR0 CallbackFuncRate`: a GUI label.
+  - `Cannot switch to silent mode`, `painter... takes too long`: the IDE.
+  - None of them change the generated code.
+- **The real problem was in the generated values, not in a warning:**
+  - `T0CON1 = 0x83` means `T0CS = LFINTOSC`, `T0CKPS = 1:8`, but **`T0ASYNC = synchronised`** (bit 4 = 0). "Enable Synchronization" was still ticked.
+  - A synchronised Timer0 is clocked through the CPU clock, so it **stops in sleep** (same reason as Timer1, section 5).
+  - The lockout would then freeze while the CPU sleeps. Timer0 would only advance during the short wake-ups, so the buttons would stay locked for a very long time.
+  - **Fix:** untick "Enable Synchronization" in TMR0 and regenerate. The result must be `T0CON1 = 0x93` (bit 4 `T0ASYNC = 1`).
+- **The rest is correct:**
+  - `TMR0H = 0x9A` = 154 → (154 + 1) × 8 / 31 kHz ≈ **40 ms**.
+  - `TMR0IE = 1`.
+  - `T0CON0 = 0x00` → 8-bit mode, **timer off at start**.
+  - In 8-bit mode, Timer0 counts from `TMR0L` up to `TMR0H`, then goes back to 0 and sets the flag. So once started, it interrupts every 40 ms until stopped.
+  - The ISR doesn't reload anything, so `TMR0_WriteTimer(0)` before `TMR0_StartTimer()` makes the first period a full 40 ms.
+- **Second try (after unticking "Enable Synchronization"):** `T0CON1 = 0x93`, so `T0ASYNC = 1` and Timer0 now runs in sleep. The rest is unchanged (40 ms, interrupt enabled, timer off at start). The project builds (745 words, 9.1 %).
+- **Note:** generating Timer0 alone doesn't debounce anything yet. Timer0 stays off until `buttons.c` starts it on a press. Any change in how often the bounce shows up before that is chance: bounce depends on how the button is pressed.
