@@ -450,3 +450,76 @@ New files: `memory.c/h`, `tmr2.c/h`, `pwm6.c/h`, `eusart.c/h`. `SYSTEM_Initializ
   - `RC6PPS = 0x10` → TX on RC6. `TRISC = 0xBF` → RC6 is an output.
   - `RXPPS = 0x17` → RX read from RC7, which is digital (`ANSELC` bit 7 = 0) and an input.
 - Error handlers are only defaults; nothing is called by interrupts.
+
+
+## 14. `system.h` and `clock.c`: what they are for
+
+### `system.h`: the shared contract
+- It's the one header everyone includes. It defines **the data shared between modules**, so B and C can write their code before A's exists, all using the same names and types.
+- It contains **declarations** (`extern ...`, types, `#define`s). The variables themselves are **defined once** in one `.c` file (e.g. `main.c`). A variable defined in a header would be duplicated in every file that includes it, and the linker would fail.
+- **What goes in it:**
+
+  | Item | Type | Why |
+  |---|---|---|
+  | Current time | `struct { uint8_t h, m, s; }` | read by the UI/LCD, the records and the alarm clock check |
+  | Config parameters | `struct { pmon, tala, alaf, alah, alam, alas, alat, alal }`, all `uint8_t` | one byte each, same order as the EEPROM layout, so saving/loading is a byte copy |
+  | Last readings | `uint8_t last_t, last_l` | written by the monitor (B), shown by the UI (C) |
+  | Pending alarms | one byte with bits `ALARM_C`, `ALARM_T`, `ALARM_L` | set by the alarm checks, shown as letters, cleared by S1 |
+  | Records | `struct { uint8_t h, m, s, t, l; } records[4]` (Tmax, Tmin, Lmax, Lmin) | exactly the 5-byte EEPROM format |
+  | Event flags | `volatile uint8_t` tick counter / button flags | set by ISRs, consumed by the main loop |
+  | "Config changed" flag | `uint8_t` | the UI sets it, the main loop saves to EEPROM |
+
+- **Why `uint8_t` everywhere:** it's an 8-bit CPU. Every value fits in a byte (hh ≤ 23, tt ≤ 50, l ≤ 7), and byte operations are single instructions, so they're fast and naturally atomic.
+- **One byte per ISR flag** (`s1_pressed`, `s2_pressed`), not bits packed into one `flags` byte:
+  - With a shared byte, the main loop clearing bit S1 (`flags &= ~FLAG_S1`) is a read-modify-write.
+  - If the S2 interrupt lands in the middle, it sets S2 in the byte, but the main loop then writes back its old copy, and the S2 press is lost.
+  - Separate bytes can't interfere with each other: setting one to 1 or 0 is a single instruction.
+  - `ticks` is a single byte for the same reason: `ticks++` in the ISR and `ticks--` in the main loop each compile to one instruction (`incf`/`decf`) on this PIC.
+- **`volatile`:** any variable written in an ISR and read in the main loop must be `volatile`. Otherwise the compiler may keep a copy in a register and never see the ISR's change (e.g. `while (!flag);` loops forever).
+- **Rule:** it's shared, so any change has to be announced to the group (README).
+
+### `clock.c`: the time of day
+- **Job:** keep hh:mm:ss from the 1 s Timer1 interrupt, with rollover (59 s → 0 and minute + 1; 59 min → 0 and hour + 1; 23 h → 0), and allow setting the time.
+- **Functions:**
+  - `clock_init(h, m)`: start from CLKH/CLKM loaded from EEPROM, seconds = 0. After a power cycle, the clock continues from the last saved minute.
+  - `clock_tick()`: advance one second with rollover. It returns/flags when the **minute** changes, because the minute change is when CLKH/CLKM get saved to EEPROM.
+  - `clock_set(h, m, s)`: used by the UI in config mode.
+- **Design decision: the ISR only counts, the main loop advances the time.**
+  - Timer1 ISR: `ticks++` (one instruction). The main loop: `while (ticks) { ticks--; clock_tick(); ... }`.
+  - **Why not update hh:mm:ss inside the ISR** (as first sketched in the README architecture):
+    - **Torn reads:** the time is 3 bytes. If the ISR changes them while the main loop is reading them (e.g. copying them to the LCD at 12:59:59 → 13:00:00), the main loop can get a mix like 12:00:00 or 13:59:59. With the ISR only counting, the time is changed only by the main loop, so this can't happen.
+    - **`clock_set()` races:** same problem the other way around. The UI writing h/m/s while the ISR increments them.
+    - **Matches the cyclic executive rule:** ISRs only update counters and set flags (README).
+  - **No second is lost** even if the main loop is busy (an EEPROM write, an LCD update): the counter accumulates, and the loop catches up on the next pass.
+  - The main loop runs after every wake-up anyway (the Timer1 interrupt wakes the CPU), so the clock still advances during sleep periods.
+- **"Setting the clock doesn't stall the seconds"** (a requirement and a test): `clock_set()` only changes the variables. Timer1 is never stopped or reloaded, so the ticks keep coming at the same rate.
+- **Testing the rollover logic:** `clock_tick()` is plain C with no hardware access, so it can be compiled and tested on the PC with gcc (e.g. 86400 ticks from 00:00:00 must come back to 00:00:00, and 23:59:59 + 1 = 00:00:00). That's faster than waiting on the board.
+
+
+## 15. The `records` variable
+
+- **What the project asks for:** keep the **maximum and minimum** temperature and luminosity seen so far, each with the **time it happened**. They survive power cycles (EEPROM offsets 16-35), are shown with S2 (T max/min for 1 s, then L max/min for 1 s), and are cleared with the **R** option in config mode.
+- **One record = 5 bytes = `record_t { h, m, s, t, l }`:** the time of the event plus **both** readings at that moment. For example, the Tmax record says "at 14:32:05 the temperature was 31 °C (the highest so far), and the luminosity at that moment was 5". The project statement defines the record this way (h, m, s, T, L).
+- **`records[4]`, indexed by the enum:**
+
+  | Index | Name | Updated when |
+  |---|---|---|
+  | 0 | `records[REC_TMAX]` | a new reading has T > the stored `t` |
+  | 1 | `records[REC_TMIN]` | T < the stored `t` |
+  | 2 | `records[REC_LMAX]` | L > the stored `l` |
+  | 3 | `records[REC_LMIN]` | L < the stored `l` |
+
+  On each update, the whole record (time + T + L) is overwritten with the current values.
+- **Why an array + enum instead of 4 separate variables:**
+  - The EEPROM layout stores the 4 records back to back: 4 × 5 = 20 bytes, offsets 16-35. With an array, saving/loading is one loop over 20 bytes in memory order, and the address of record i is `0xF000 + 16 + 5·i`.
+  - `REC_COUNT` (= 4) is the array size, so the size and the names always agree.
+- **Who uses it:**
+  - B (`monitor.c`) updates it after each reading.
+  - C (`ui.c`) displays it.
+  - B (`nvm.c`) saves/loads it.
+  - The R option (C) resets it.
+- **Reset value:** after R (or invalid EEPROM), the next reading should become all four records. A simple way is to set max `t`/`l` to 0 and min `t`/`l` to 255, so any real reading replaces them.
+
+### Build check
+- `system.h` + `main.c` compile together with all MCC files with XC8 v3.10 (PIC16F18875, DFP 1.24.387): no errors.
+- The only warnings come from the generated files: implicit conversions, and "function is never called" for driver functions we don't use yet. They're harmless, and we don't edit generated files.

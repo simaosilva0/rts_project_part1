@@ -43,6 +43,19 @@
 
 #include "mcc_generated_files/mcc.h"
 
+#include "system.h"
+
+clock_time_t now;
+config_t     cfg;
+record_t     records[REC_COUNT];
+uint8_t      last_t, last_l;
+uint8_t      alarms;
+uint8_t      cfg_dirty;
+
+volatile uint8_t ticks;
+volatile uint8_t s1_pressed;
+volatile uint8_t s2_pressed;
+
 static void tick(void) { 
     LED_5_Toggle();
 }
