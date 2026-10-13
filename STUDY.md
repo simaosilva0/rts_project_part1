@@ -44,7 +44,7 @@ Source: Microchip "Curiosity HPC Schematics Rev 2" (DM164136), sheet 8, "mikroBU
 | `device_config.c` | configuration bits (`#pragma config`) |
 | `pin_manager.c/h` | pin directions, pull-ups, IOC, PPS, macros like `LED_5_Toggle()`, `SW1_GetValue()` |
 | `interrupt_manager.c/h` | the PIC16's single interrupt function: checks which flag is set, calls that module's ISR |
-| `tmr0/tmr1/tmr2.c/h`, `pwm6`, `i2c1_master`, `adcc`, `memory`, `eusart` | one driver per peripheral (sections 5-12) |
+| `tmr0/tmr1/tmr2.c/h`, `pwm6`, `i2c1_master`, `adcc`, `memory` | one driver per peripheral (sections 5-10, 15) |
 
 ### How an interrupt reaches our code
 1. A peripheral sets its flag, e.g. Timer1 overflows → `TMR1IF`. The CPU jumps to `INTERRUPT_InterruptManager()`.
@@ -258,16 +258,16 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Pin:** `RA4PPS = 0x0E`, so PWM6OUT drives RA4 instead of `LATA4`. While PWM6 is disabled, its output is low.
 
 
-## 11. EUSART at 9600 baud
+## 11. USART: not in this version
 
-- The serial port (asynchronous: TX and RX, no clock line). It's used in part 2; for now it's only configured, so the pins and timing are fixed early.
-- **Pins:** TX = RC6 (`RC6PPS = 0x10`, output), RX = RC7 (`RXPPS = 0x17`, digital input). These are the EUSART defaults and the mikroBUS 1 UART lines.
-- **Baud:**
-  - BRG16 = 1, BRGH = 1, `SP1BRG = 103` → 4 MHz / (4 × 104) = **9615 baud**, 0.16 % error.
-  - UART tolerates about ±2 %.
-- **8N1** (8 data bits, no parity, 1 stop): the standard. TX and RX enabled (`TX1STA = 0x24`, `RC1STA = 0x90`).
-- **No interrupts, no printf redirection** for now (printf costs code space).
-- **Timing consequence:** 9600 baud ≈ **1 ms per byte**. Once the USART is in use, every task must stay short and non-blocking.
+- **Serial communication (USART at 9600 baud) comes in a future version, not this one.** So it isn't configured in MCC and there's no driver or stub. An enabled peripheral nothing uses would only be dead code, and its pins (RC6/RC7, the mikroBUS 1 UART) stay free.
+- **What this version does instead is stay ready for it.** The constraint it brings:
+  - 9600 baud, 8N1 = 10 bits per byte ≈ **1 ms per byte**. With a 1-byte hardware buffer, the CPU must feed or drain it about every 1 ms, or bytes are lost.
+  - So **every task must be short and non-blocking**: no `__delay_ms()`, no busy-waiting for long. That's why debouncing uses a timer (section 15), and why the main loop only reacts to flags.
+- **What adding it later will need:**
+  - MCC: EUSART, 9600 baud (BRG16 = 1, BRGH = 1, `SP1BRG = 103` → 4 MHz / (4 × 104) = 9615 baud, 0.16 % error; UART tolerates about ±2 %). TX = RC6, RX = RC7 through PPS. Preferably interrupt-driven with software buffers, so the main loop never waits.
+  - `power.c`: a byte still shifting out when `SLEEP()` runs gets cut off (the baud generator runs from Fosc, which stops in sleep). So "TX in progress" (`TRMT = 0`) or a non-empty TX buffer must block sleep, like the pending flags do. Received bytes can wake the CPU only with the auto-baud/wake-up feature, otherwise RX means no sleep.
+  - Task times measured in this version (timing pin toggles) show how much margin is left in the loop.
 
 
 ## 12. `system.h`: the shared contract

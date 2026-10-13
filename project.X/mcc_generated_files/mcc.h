@@ -60,7 +60,6 @@
 #include "tmr0.h"
 #include "adcc.h"
 #include "memory.h"
-#include "eusart.h"
 
 
 

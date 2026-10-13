@@ -43,7 +43,7 @@ Things to decide early:
 - PWM output mapped to RA4 with PPS.
 - PWM uses Timer2. If Timer2 runs from Fosc it stops in sleep, so either don't sleep while TALA is active or clock Timer2 from LFINTOSC.
 - Luminosity: `level = adc >> 7` (10-bit ADC).
-- USART at 9600 baud will be added later (~1 ms per byte). Keep all tasks short and non-blocking.
+- USART at 9600 baud comes in a future version (~1 ms per byte). It's not configured now, but keep all tasks short and non-blocking.
 
 EEPROM layout (addresses are offsets: the MCC functions `DATAEE_WriteByte/ReadByte` take the full address, `0xF000 + offset`):
 
@@ -82,7 +82,6 @@ Configured in MCC:
 - NVM (EEPROM)
 - IOC on RB4 (S1) and RC5 (S2)
 - Pins: LEDs RA4-RA7 (the LCD is on the I2C bus, no pins of its own)
-- EUSART 9600 (generated, used later)
 
 
 ## Shared header
@@ -98,7 +97,7 @@ Configured in MCC:
 - MCC configuration and regeneration.
 - `main.c`: main loop, flags, interrupt setup, IOC on RB4/RC5.
 - `power.c`: SLEEP() logic, what blocks sleep.
-- USART stub for later.
+- Keep the design ready for USART (future version, not configured now): tasks short and non-blocking.
 - Measure task times (toggle a spare pin, check with scope/logic analyser).
 
 ### B - Sensors, EEPROM, alarms
