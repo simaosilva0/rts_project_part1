@@ -61,6 +61,14 @@ static void tick(void) {
     ticks++;
 }
 
+static void s1_isr(void) {
+    s1_pressed = 1;
+}
+
+static void s2_isr(void) {
+    s2_pressed = 1;
+}
+
 /*
                          Main application
  */
@@ -72,6 +80,8 @@ void main(void) {
 
   // Add handler registration
   TMR1_SetInterruptHandler(tick);
+  IOCBF4_SetInterruptHandler(s1_isr);
+  IOCCF5_SetInterruptHandler(s2_isr);
 
   // When using interrupts, you need to set the Global and Peripheral Interrupt
   // Enable bits Use the following macros to:
@@ -95,6 +105,14 @@ void main(void) {
         if (clock_tick()) {
             /* minute changed: save CLKH/CLKM here later */
         }
+    }
+    if (s1_pressed) {
+        s1_pressed = 0;
+        LED_3_Toggle();
+    }
+    if (s2_pressed) {
+        s2_pressed = 0;
+        LED_4_Toggle();
     }
   }
 }

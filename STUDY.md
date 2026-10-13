@@ -551,3 +551,21 @@ New files: `memory.c/h`, `tmr2.c/h`, `pwm6.c/h`, `eusart.c/h`. `SYSTEM_Initializ
   - The project builds with XC8 v3.10: program memory **591 of 8192 words (7.2 %)**, data memory **91 of 1024 bytes (8.9 %)**. That's plenty of room left.
   - The PC test passes (`clock ok`).
   - D5 blinks as before on the board.
+
+
+## 17. Startup delay and the button flags
+
+### Why D5 takes a while to start blinking after power-up
+There are two delays, and they add up:
+1. **The first toggle comes after a full second.** `PIN_MANAGER_Initialize()` starts every LED at 0 (`LATA = 0x00`), and Timer1 starts from its preload, so the first overflow (and the first toggle) arrives **1 s after the program starts**. Until then, D5 is just off. That's normal behaviour, not a delay in the program.
+2. **The board's own debugger starts first.** On the Curiosity HPC, the onboard debugger (PKOB4) controls the target's power. When you plug in USB, it boots and then switches on the PIC's supply, which can take a second or two. Only then does our program begin.
+- **How to tell them apart:** if the gap is about 1 s, it's (1). If it's longer, it's mostly (2). Either way, nothing is wrong with our code.
+- **If an immediate sign of life is wanted:** turn D5 on in `main()` right after the init. Then it lights the moment the program starts, and the first toggle turns it off 1 s later.
+
+### The button flags in `main.c`
+- **The chain:** a press pulls RB4/RC5 low → IOC sets `IOCBF4`/`IOCCF5` → `INTERRUPT_InterruptManager()` → `PIN_MANAGER_IOC()` → `IOCBF4_ISR()` → **our callback** → then MCC clears the flag (`IOCBFbits.IOCBF4 = 0`).
+- **Our callbacks only set a flag:** `s1_pressed = 1;`. They do no processing in the ISR (cyclic executive rule). The main loop sees the flag, clears it, and handles the press.
+- **Clearing in the main loop:** `s1_pressed = 0` is a single instruction. Since each button has its own byte (section 14), it can't wipe out the other button's flag.
+- **Bounce:** a mechanical button bounces, so one press can make several falling edges in a few ms, i.e. several interrupts. The flag is just set to 1 again, so it doesn't pile up, but if the main loop handles the flag between two bounces, **one press can count twice**. That's what **debouncing** fixes: after a press, ignore that button for ~20-50 ms. Debouncing is C's job (`buttons.c`). The raw flags are the input it starts from.
+- **Temporary test:** toggling D3 on S1 and D4 on S2 proves the whole chain works. If a LED sometimes toggles twice on one press, you're seeing bounce. It's a useful thing to see before C writes the debounce, and a good point for the report.
+- **Later:** IOC also **wakes the PIC from sleep**, so a button press will work even while the system sleeps (`power.c`).
