@@ -74,5 +74,5 @@ extern volatile uint8_t ticks;      /* +1 per second from Timer1 */
 extern volatile uint8_t s1_pressed;
 extern volatile uint8_t s2_pressed;
 
-#endif
+#endif /* SYSTEM_H */
 

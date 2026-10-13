@@ -43,6 +43,7 @@
 
 #include "mcc_generated_files/mcc.h"
 
+#include "clock.h"
 #include "system.h"
 
 clock_time_t now;
@@ -57,7 +58,7 @@ volatile uint8_t s1_pressed;
 volatile uint8_t s2_pressed;
 
 static void tick(void) { 
-    LED_5_Toggle();
+    ticks++;
 }
 
 /*
@@ -66,6 +67,8 @@ static void tick(void) {
 void main(void) {
   // initialize the device
   SYSTEM_Initialize();
+  
+  clock_init(0, 0);
 
   // Add handler registration
   TMR1_SetInterruptHandler(tick);
@@ -86,7 +89,13 @@ void main(void) {
   // INTERRUPT_PeripheralInterruptDisable();
 
   while (1) {
-    // Add your application code
+    while (ticks) {
+        ticks--;
+        LED_5_Toggle();
+        if (clock_tick()) {
+            /* minute changed: save CLKH/CLKM here later */
+        }
+    }
   }
 }
 /**

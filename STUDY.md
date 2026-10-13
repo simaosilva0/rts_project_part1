@@ -523,3 +523,31 @@ New files: `memory.c/h`, `tmr2.c/h`, `pwm6.c/h`, `eusart.c/h`. `SYSTEM_Initializ
 ### Build check
 - `system.h` + `main.c` compile together with all MCC files with XC8 v3.10 (PIC16F18875, DFP 1.24.387): no errors.
 - The only warnings come from the generated files: implicit conversions, and "function is never called" for driver functions we don't use yet. They're harmless, and we don't edit generated files.
+
+
+## 16. `clock.c` in detail
+
+- **Files:** `clock.h` (the 3 function declarations) and `clock.c`. It uses the shared `now` from `system.h`; it doesn't own its own copy, because the LCD, the records and the alarm check all read `now`.
+- **`clock_tick()`:**
+  - `if (++now.s < 60) return 0;` increments first, then compares. 59 → 60 fails the test and falls through to the rollover.
+  - The rollover goes in a chain: seconds 60 → 0 and minute + 1; minutes 60 → 0 and hour + 1; hours 24 → 0.
+  - **Return value 1 = "the minute changed".** That's the moment to save CLKH/CLKM to EEPROM (the requirement: hh:mm survive a power cycle). It's returned instead of saving inside `clock_tick()`, so `clock.c` stays pure logic (no EEPROM, no hardware), and saving is the main loop's decision. That also makes it testable on the PC.
+  - `>=` instead of `==` in the minute/hour checks: if a bad value ever got in (e.g. h = 30), it still rolls back to a valid range instead of counting up to 255.
+- **`clock_set()`:**
+  - It only writes the 3 variables and **never touches Timer1**, so the seconds keep coming at the same rate ("setting the clock doesn't stall the seconds").
+  - The sub-second phase isn't reset: after setting the time, the next second can come anywhere between 0 and 1 s later. That's acceptable for a clock with no displayed fractions of a second.
+- **`clock_init(h, m)`:** starts at h:m:00, with the values that come from EEPROM (CLKH/CLKM). Until B's `nvm.c` exists, it's called with the defaults (0, 0).
+- **Wiring in `main.c`:**
+  - The Timer1 handler becomes just `ticks++;`.
+  - The main loop runs `while (ticks) { ticks--; ... clock_tick() ... }`.
+  - The D5 blink moves from the ISR into that loop. It's "work", so by the cyclic-executive rule it belongs in the main loop, and if D5 blinks, it proves the whole chain ISR → counter → main loop works.
+- **The PC test (`project.X/test/test_clock.c`, not part of the MPLAB project):**
+  - 23:59:59 + 1 s = 00:00:00, with "minute changed" = 1.
+  - A normal second returns 0.
+  - 86400 ticks (one day) from 12:00:00 come back to 12:00:00, with exactly 1440 minute changes.
+  - Run it with `gcc -I. test/test_clock.c clock.c -o test_clock && ./test_clock` from `project.X/`. It prints `clock ok`, or stops at the first failing `assert`.
+  - The test defines its own `now`, because on the PC there's no `main.c` to provide it.
+- **Verified:**
+  - The project builds with XC8 v3.10: program memory **591 of 8192 words (7.2 %)**, data memory **91 of 1024 bytes (8.9 %)**. That's plenty of room left.
+  - The PC test passes (`clock ok`).
+  - D5 blinks as before on the board.
