@@ -26,6 +26,7 @@
       <itemPath>clock.h</itemPath>
       <itemPath>power.h</itemPath>
       <itemPath>buttons.h</itemPath>
+      <itemPath>tc74.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -62,6 +63,7 @@
       <itemPath>clock.c</itemPath>
       <itemPath>power.c</itemPath>
       <itemPath>buttons.c</itemPath>
+      <itemPath>tc74.c</itemPath>
     </logicalFolder>
   </logicalFolder>
   <projectmakefile>Makefile</projectmakefile>
