@@ -19,7 +19,7 @@
 
 /*
     (c) 2018 Microchip Technology Inc. and its subsidiaries.
-
+  
     Subject to your compliance with these terms, you may use Microchip software
    and any derivatives exclusively with Microchip products. It is your
    responsibility to comply with third party license terms applicable to your
@@ -50,6 +50,7 @@
 #include "nvm.h"
 #include "power.h"
 #include "system.h"
+#include "lcd.h"
 
 clock_time_t now;
 config_t     cfg;
@@ -101,6 +102,8 @@ void main(void) {
 
   // Disable the Peripheral Interrupts
   // INTERRUPT_PeripheralInterruptDisable();
+
+  lcd_init();
 
   while (1) {
     while (ticks) {

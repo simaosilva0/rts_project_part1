@@ -74,6 +74,8 @@
       <itemPath>monitor.c</itemPath>
       <itemPath>nvm.c</itemPath>
       <itemPath>alarm_out.c</itemPath>
+      <itemPath>lcd.c</itemPath>
+      <itemPath>lcd.h</itemPath>
     </logicalFolder>
   </logicalFolder>
   <sourceRootList>
@@ -87,7 +89,7 @@
         <targetDevice>PIC16F18875</targetDevice>
         <targetHeader></targetHeader>
         <targetPluginBoard></targetPluginBoard>
-        <platformTool>PKOBSKDEPlatformTool</platformTool>
+        <platformTool>Simulator</platformTool>
         <languageToolchain>XC8</languageToolchain>
         <languageToolchainVersion>2.45</languageToolchainVersion>
         <platform>3</platform>
