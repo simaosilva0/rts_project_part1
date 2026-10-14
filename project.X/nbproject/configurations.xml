@@ -76,6 +76,8 @@
       <itemPath>alarm_out.c</itemPath>
       <itemPath>lcd.c</itemPath>
       <itemPath>lcd.h</itemPath>
+      <itemPath>ui.c</itemPath>
+      <itemPath>ui.h</itemPath>
     </logicalFolder>
   </logicalFolder>
   <sourceRootList>

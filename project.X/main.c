@@ -50,7 +50,6 @@
 #include "nvm.h"
 #include "power.h"
 #include "system.h"
-#include "lcd.h"
 
 clock_time_t now;
 config_t     cfg;
