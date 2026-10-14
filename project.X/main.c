@@ -19,7 +19,7 @@
 
 /*
     (c) 2018 Microchip Technology Inc. and its subsidiaries.
-  
+
     Subject to your compliance with these terms, you may use Microchip software
    and any derivatives exclusively with Microchip products. It is your
    responsibility to comply with third party license terms applicable to your
@@ -50,6 +50,7 @@
 #include "nvm.h"
 #include "power.h"
 #include "system.h"
+#include "ui.h"
 
 clock_time_t now;
 config_t     cfg;
@@ -102,7 +103,7 @@ void main(void) {
   // Disable the Peripheral Interrupts
   // INTERRUPT_PeripheralInterruptDisable();
 
-  lcd_init();
+  ui_init();
 
   while (1) {
     while (ticks) {
@@ -119,14 +120,7 @@ void main(void) {
       nvm_save_config(now.h, now.m);
       cfg_dirty = 0;
     }
-    if (s1_pressed) {
-        s1_pressed = 0;
-        alarm_out_clear();
-      monitor_clear_alarm_latches();
-    }
-    if (s2_pressed) {
-        s2_pressed = 0;
-    }
+    ui_task();
     power_sleep_if_idle();
   }
 }

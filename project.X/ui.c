@@ -3,6 +3,8 @@
 #include "system.h"
 #include "clock.h"
 #include "lcd.h"
+#include "alarm_out.h"
+#include "monitor.h"
 
 /* The clock tick has 1 s granularity, so a view of N s needs N+1 ticks to
  * last at least N s (the first tick lands 0-1 s after the press). */
@@ -256,7 +258,8 @@ static void on_s1(void)
     case UI_NORMAL:
     case UI_REC_T:
     case UI_REC_L:
-        alarms = 0;                         /* clear C/T/L notifications */
+        alarm_out_clear();                  /* clear C/T/L notifications */
+        monitor_clear_alarm_latches();
         set_state(UI_THRESH, THRESH_TICKS);
         break;
     case UI_THRESH:
