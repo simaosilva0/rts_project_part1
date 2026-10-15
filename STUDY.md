@@ -220,6 +220,12 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **No interrupt:** `ADCC_GetSingleConversion(POT)` selects the channel, starts the conversion, waits for `ADGO` to clear (≈ 20 + 24 = **45 µs**), and returns the result. Unlike I2C, it can't hang.
 - **Energy:** `ADON` stays 1 between readings. The read function turns it on itself, so `ADCON0bits.ADON = 0;` after each reading is a free saving to measure.
 
+### ADC application module
+- `adc.c` is the hand-written boundary around the generated ADCC driver. It calls `ADCC_GetSingleConversion(POT)` and returns the luminosity level as `sample >> 7`, giving exactly 0-7 from the 10-bit result.
+- No ADC interrupt is enabled: a conversion takes about 45 us and is requested only by the foreground monitoring task. This keeps the ISR paths short and leaves the shared `last_l` value under main-loop ownership.
+- No pin or peripheral change is needed in MCC for this module. MCC already configures RA0 as analog channel `POT`, uses VDD/VSS references, right alignment, FOSC/8, and 10 TAD acquisition. The generated `adcc.*` files remain read-only.
+- The wrapper intentionally does not add filtering or hysteresis. A reading exactly on a 128-count boundary may change between adjacent levels; filtering can be added later if the board test shows that this matters.
+
 
 ## 9. EEPROM (Memory module)
 
