@@ -244,6 +244,13 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Reading** is instant.
 - **Wear:** ~100k writes per cell (the README note about saving CLKM every minute).
 
+### Configuration block implementation
+- `nvm.c` keeps EEPROM addresses private and converts each offset to the full MCC address `0xF000 + offset`. Other modules use `nvm_load()` and `nvm_save_config()` instead of knowing the memory map.
+- The checksum is the 8-bit sum, with natural modulo-256 wraparound, of the magic word and configuration bytes at offsets 1-10. Loading requires the magic word, checksum, and all bounded time/threshold fields to be valid; otherwise the documented defaults are used.
+- Configuration writes invalidate the block by clearing the magic word first. The fields and checksum are then written, and the magic word is written last. A reset during a partial write therefore causes defaults on the next boot instead of accepting incomplete configuration.
+- The saved clock hours and minutes are loaded before `clock_init()`. Seconds are deliberately restored as 0, as required by the project.
+- The records are stored consecutively at offsets 16-35, five bytes per `record_t`. On load, invalid timestamps or sensor ranges reset all four records to the documented max/min sentinels. Record writes are kept separate from configuration writes because they have different update frequencies and wear behavior.
+
 
 ## 10. PWM on D2 (Timer2 + PWM6)
 

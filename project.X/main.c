@@ -69,11 +69,14 @@ static void tick(void) {
                          Main application
  */
 void main(void) {
+  uint8_t saved_clock_h;
+  uint8_t saved_clock_m;
+
   // initialize the device
   SYSTEM_Initialize();
 
-  nvm_load();
-  clock_init(0, 0);
+  nvm_load(&saved_clock_h, &saved_clock_m);
+  clock_init(saved_clock_h, saved_clock_m);
   monitor_init();
   power_init();
 
