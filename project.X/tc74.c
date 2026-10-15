@@ -5,20 +5,30 @@
 #define TC74_RWCR     0x01  /* config register */
 #define TC74_SHDN     0x80  /* RWCR: standby */
 #define TC74_DATA_RDY 0x40  /* RWCR: conversion done */
+#define TC74_READY_POLLS 8
+
+static uint8_t last_temperature;
 
 uint8_t tc74_read(void)
 {
+    uint8_t poll;
     int8_t t;
 
-    /* after power-up or wake the first conversion takes up to ~250 ms */
-    while (!(I2C1_Read1ByteRegister(TC74_ADDR, TC74_RWCR) & TC74_DATA_RDY))
-        ;
+    /* Do not wait forever if the first conversion is not ready. */
+    for (poll = 0; poll < TC74_READY_POLLS; poll++) {
+        if (I2C1_Read1ByteRegister(TC74_ADDR, TC74_RWCR) & TC74_DATA_RDY)
+            break;
+    }
+    if (poll == TC74_READY_POLLS)
+        return last_temperature;
+
     t = (int8_t)I2C1_Read1ByteRegister(TC74_ADDR, TC74_RTR);
     if (t < 0)
-        return 0;
+        t = 0;
     if (t > 50)
-        return 50;
-    return (uint8_t)t;
+        t = 50;
+    last_temperature = (uint8_t)t;
+    return last_temperature;
 }
 
 void tc74_standby(void)

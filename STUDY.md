@@ -190,6 +190,8 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - **Address:** 0x27 for a **PCF8574T**, 0x3F for a **PCF8574AT** (read the chip).
   - **Slow:** each character needs several I2C bytes (each 4-bit half is sent with E high, then E low), so a full line takes a few ms. Only refresh what changed, and never write to the LCD from an ISR.
   - **Shared bus = one user at a time:** the TC74 read and the LCD update both run in the main loop, so they never overlap.
+  - **TC74 readiness timeout:** `tc74_read()` checks the RWCR data-ready bit a bounded number of times instead of waiting forever. If the first conversion is still not ready, it returns the last valid temperature, so a normal delayed conversion does not corrupt the shared reading or freeze this TC74-level loop.
+  - **Remaining I2C limitation:** the generated example functions used by the TC74 still contain unbounded waits while opening or completing an I2C transaction. We do not edit generated files; therefore a physically stuck I2C bus can still block inside MCC before `tc74_read()` regains control. Replacing that helper with a timeout-aware hand-written transaction is a separate change, not part of this small TC74 readiness fix.
 - **Blue potentiometer = contrast.** If the LCD shows nothing or full black boxes, turn it first. The jumper by the header switches the backlight.
 - **Pull-ups:** these backpacks usually have SDA/SCL pull-ups (resistors marked `472` = 4.7 kΩ or `103` = 10 kΩ). If so, they serve the whole bus.
 - **Voltage:**
