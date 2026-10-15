@@ -2,28 +2,26 @@
 
 The technical decisions of the project and the reasons behind them, organized by topic. Check here first when something isn't clear.
 
-
 ## 1. The board (Curiosity HPC)
 
 Source: Microchip "Curiosity HPC Schematics Rev 2" (DM164136), sheet 8, "mikroBUS and Target PIC Interface".
 
-| What | Connection |
-|---|---|
-| LEDs D2-D5 | RA4-RA7 via jumpers J4-J7, each with a 1 kΩ resistor (R4, R6, R8, R12) |
-| S1 | RB4, 10 kΩ pull-up R3, 1 kΩ series R11, jumper J2 |
-| S2 | RC5, 10 kΩ pull-up R9, 1 kΩ series R10, jumper J1 |
-| S3 | Reset (MCLR/RE3), 10 kΩ pull-up R21 |
-| Potentiometer | R1 10 kΩ, wiper → R2 1 kΩ → J3 → RA0 |
-| 32.768 kHz crystal | Y2 + C21/C22, **not mounted** |
-| mikroBUS 1 I2C | SCL = RC3 (J36), SDA = RC4 (J37), **no pull-ups** |
-| mikroBUS 1 UART | TX = RC6, RX = RC7, through 330 Ω (R39/R40) |
+| What               | Connection                                                              |
+| ------------------ | ----------------------------------------------------------------------- |
+| LEDs D2-D5         | RA4-RA7 via jumpers J4-J7, each with a 1 kΩ resistor (R4, R6, R8, R12) |
+| S1                 | RB4, 10 kΩ pull-up R3, 1 kΩ series R11, jumper J2                     |
+| S2                 | RC5, 10 kΩ pull-up R9, 1 kΩ series R10, jumper J1                     |
+| S3                 | Reset (MCLR/RE3), 10 kΩ pull-up R21                                    |
+| Potentiometer      | R1 10 kΩ, wiper → R2 1 kΩ → J3 → RA0                               |
+| 32.768 kHz crystal | Y2 + C21/C22,**not mounted**                                      |
+| mikroBUS 1 I2C     | SCL = RC3 (J36), SDA = RC4 (J37),**no pull-ups**                  |
+| mikroBUS 1 UART    | TX = RC6, RX = RC7, through 330 Ω (R39/R40)                            |
 
 - "Solder-blob jumpers" (J1-J7 etc.) are pads bridged with solder. If one is open, that pin is disconnected from its LED/button.
 - D1 is the board's own power LED, not ours. That's why the user LEDs start at D2.
 - **Power-up delay:** the onboard debugger (PKOB4) boots first and then switches on the PIC's supply, which can take a second or two. On top of that, the first D5 toggle comes 1 s after the program starts (all LEDs start off). Neither is a bug.
 - **Supply:** the board can give the target 3.3 V or 5 V. We use **5 V** for everything (section 7).
 - Parts available: only the board, the TC74 and the LCD. No external resistors or capacitors.
-
 
 ## 2. MCC (MPLAB Code Configurator)
 
@@ -38,15 +36,16 @@ Source: Microchip "Curiosity HPC Schematics Rev 2" (DM164136), sheet 8, "mikroBU
 
 ### Generated files
 
-| File | What it does |
-|---|---|
-| `mcc.c/h` | `SYSTEM_Initialize()` calls every module's init, plus the oscillator setup |
-| `device_config.c` | configuration bits (`#pragma config`) |
-| `pin_manager.c/h` | pin directions, pull-ups, IOC, PPS, macros like `LED_5_Toggle()`, `SW1_GetValue()` |
-| `interrupt_manager.c/h` | the PIC16's single interrupt function: checks which flag is set, calls that module's ISR |
-| `tmr0/tmr1/tmr2.c/h`, `pwm6`, `i2c1_master`, `adcc`, `memory` | one driver per peripheral (sections 5-10, 15) |
+| File                                                                    | What it does                                                                             |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `mcc.c/h`                                                             | `SYSTEM_Initialize()` calls every module's init, plus the oscillator setup             |
+| `device_config.c`                                                     | configuration bits (`#pragma config`)                                                  |
+| `pin_manager.c/h`                                                     | pin directions, pull-ups, IOC, PPS, macros like`LED_5_Toggle()`, `SW1_GetValue()`    |
+| `interrupt_manager.c/h`                                               | the PIC16's single interrupt function: checks which flag is set, calls that module's ISR |
+| `tmr0/tmr1/tmr2.c/h`, `pwm6`, `i2c1_master`, `adcc`, `memory` | one driver per peripheral (sections 5-10, 15)                                            |
 
 ### How an interrupt reaches our code
+
 1. A peripheral sets its flag, e.g. Timer1 overflows → `TMR1IF`. The CPU jumps to `INTERRUPT_InterruptManager()`.
 2. The manager sees `TMR1IE && TMR1IF` and calls `TMR1_ISR()`.
 3. `TMR1_ISR()` clears the flag, does its work (reload), and calls the function we **registered** with `TMR1_SetInterruptHandler()`.
@@ -55,12 +54,13 @@ Source: Microchip "Curiosity HPC Schematics Rev 2" (DM164136), sheet 8, "mikroBU
 We never edit these files; we only register our own callbacks.
 
 ### Why the interrupt enable lines in `main.c` are needed
+
 Each source's enable bit (`TMR1IE`, `IOCIE`, ...) only allows that source. The CPU also needs:
+
 - **GIE**, the global enable: `INTERRUPT_GlobalInterruptEnable()`;
 - **PEIE**, the peripheral enable: `INTERRUPT_PeripheralInterruptEnable()`, because Timer1 is a "peripheral" interrupt.
 
 Without them, flags get set but no ISR runs. MCC leaves these lines commented so we choose when interrupts start (after all init).
-
 
 ## 3. System clock and configuration bits
 
@@ -77,10 +77,10 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Low-voltage programming on (`LVP = ON`):** lets the onboard debugger program the chip. This is the normal setting for this board.
 - **`STVREN = ON`:** a hardware stack overflow causes a reset (section 17).
 
-
 ## 4. Pins: LEDs and buttons
 
 ### LEDs D2-D5 on RA4-RA7 (outputs)
+
 - `TRISA = 0x0F`: bits 4-7 = 0 → outputs (TRIS: 0 = Output, 1 = Input).
 - Use:
   - D5 toggles every second (the clock is alive);
@@ -90,6 +90,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Toggle vs blink:** toggling once per second = 1 s on, 1 s off = one blink every 2 s. To check timing, count toggles (60 per minute).
 
 ### Buttons S1 (RB4) and S2 (RC5), named `SW1` / `SW2` (inputs)
+
 - **Active low:** a press connects the pin to GND (reads 0). Released, the pull-up holds it at 1.
 - **Pull-ups:**
   - The board already has external 10 kΩ pull-ups (R3, R9). The 1 kΩ series resistors protect the pin if it's ever configured as an output while pressed.
@@ -101,14 +102,15 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - Bounce is handled in `buttons.c` (section 15).
 - **Unused pins** stay **analog** (`ANSEL = 1`, MCC's default). This disconnects their digital input buffers, so floating pins don't draw current.
 
-
 ## 5. Timer1: the 1 s tick
 
 ### Why Timer1
+
 - The project statement asks for it.
 - It's 16-bit and can run **asynchronously** from a low-frequency clock that keeps running in sleep, so it counts during sleep and its interrupt wakes the CPU. The clock must not stop while sleeping.
 
 ### Clock source: LFINTOSC (~31 kHz internal)
+
 - **Why not SOSC:** SOSC needs an external 32.768 kHz crystal. The board has the footprint (Y2) but it isn't mounted, so SOSC would never oscillate.
 - **Why LFINTOSC works:** it's built in, needs no parts, and keeps running in sleep.
 - **The cost: accuracy.** It can be off by several percent, varying with temperature and voltage. 1 % is about 14 min per day. Measure the drift against a stopwatch over 10+ minutes and put it in the report: it's a trade-off of low power and no parts against accuracy.
@@ -117,6 +119,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - If the clock runs slow, use a higher preload (fewer counts), and vice versa.
 
 ### Synchronization off (asynchronous)
+
 - **What synchronization is:** with it on, each Timer1 clock edge passes through a circuit that samples it with the **CPU clock** before the counter increments. That keeps the counter in step with the CPU.
 - **Why it must be off:**
   - `SLEEP()` stops the CPU clock. A synchronized timer would freeze in sleep: no overflow, no interrupt, no wake-up.
@@ -124,14 +127,15 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **The cost:** reading or writing `TMR1H:TMR1L` while the timer runs could catch the two bytes mid-change. We never read it: we only use the overflow interrupt and keep the time in variables (section 14).
 
 ### Interrupts: TMRI on, TMRGI off
+
 - **TMRI** = the overflow interrupt, our 1 s tick.
 - **TMRGI** = the gate interrupt: Timer1's "gate" lets an external signal start and stop counting, to measure pulse lengths. We don't use it, so it stays off.
 
 ### Generated values
+
 - `T1CLK = 0x04` → LFINTOSC.
 - `T1CON = 0x05` → prescaler 1:1, `nT1SYNC` = not synchronized, timer on.
 - **Small reload error:** after each overflow, `TMR1_ISR()` writes the preload again. Counts between the overflow and that write are lost (about 1 in 31000, ≈ 0.003 %). That's negligible next to LFINTOSC's own error.
-
 
 ## 6. I2C bus (MSSP1): TC74 and LCD
 
@@ -146,6 +150,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - `TRISC` stays input on these pins: the MSSP drives them itself, open-drain.
 
 ### 100 kHz, standard speed
+
 - 100 kHz is the TC74's maximum. `SSP1ADD = 4 MHz / (4 × 100 kHz) − 1 = 9`.
 - **Slew rate control off** (`SSP1STAT = 0x80`, `SMP = 1`):
   - Slew rate = how fast an edge rises or falls.
@@ -154,6 +159,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - `SSP1CON1 = 0x08` → I2C Master mode. The driver turns the module on and off around each transfer.
 
 ### Pull-ups: the PIC's WPU on RC3/RC4
+
 - I2C lines are **open-drain**: devices only pull them low, and a resistor pulls them high. Without pull-ups, the bus stays low and nothing works.
 - The board has none, the TC74 chip has none, and we can't add resistors. The LCD backpack usually has them (section 7). The WPU on RC3/RC4 (`WPUC = 0x38`) makes sure there are always some.
 - **WPU limits:**
@@ -162,6 +168,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - **Knob if reads fail:** lower the I2C clock (e.g. 50 kHz). Slower clocks give slow edges more time, and the TC74 doesn't need speed.
 
 ### Polled driver, not interrupt-driven
+
 - **Polled:** the driver starts each step (start, byte, stop) and waits in a loop until the hardware's "done" flag is set. It's simple and the order of operations is obvious.
 - **Interrupt-driven:** returns immediately, and a state machine in the ISR runs each step. The CPU is free meanwhile, but there's more code, another interrupt source, and the result arrives later.
 - **Why polled is enough:**
@@ -174,9 +181,8 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - So if the program "stops" at the first sensor read or LCD write, suspect the wiring, pull-ups and address first.
 
 ### TC74 API
+
 - `I2C1_Read1ByteRegister(0x4D, 0x00)` (from `examples/i2c1_master_example.h`) reads register 0x00 = TEMP: °C, signed 8-bit.
-
-
 
 ## 7. The LCD: 16x2 HD44780 with a PCF8574 I2C backpack
 
@@ -198,7 +204,6 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - The backpack's pull-ups go to its own VCC. An LCD at 5 V with the PIC at 3.3 V would pull SDA/SCL above what the PIC pins accept.
   - So **everything runs at 5 V**. The LCD needs it for contrast, and the PIC (1.8-5.5 V) and TC74 (2.7-5.5 V) both support it.
 - `lcd.c` is hand-written (MCC has no HD44780/PCF8574 driver) on top of the MCC I2C driver.
-
 
 ## 8. ADC (ADCC): the potentiometer
 
@@ -223,11 +228,11 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Energy:** `ADON` stays 1 between readings. The read function turns it on itself, so `ADCON0bits.ADON = 0;` after each reading is a free saving to measure.
 
 ### ADC application module
+
 - `adc.c` is the hand-written boundary around the generated ADCC driver. It calls `ADCC_GetSingleConversion(POT)` and returns the luminosity level as `sample >> 7`, giving exactly 0-7 from the 10-bit result.
 - No ADC interrupt is enabled: a conversion takes about 45 us and is requested only by the foreground monitoring task. This keeps the ISR paths short and leaves the shared `last_l` value under main-loop ownership.
 - No pin or peripheral change is needed in MCC for this module. MCC already configures RA0 as analog channel `POT`, uses VDD/VSS references, right alignment, FOSC/8, and 10 TAD acquisition. The generated `adcc.*` files remain read-only.
 - The wrapper intentionally does not add filtering or hysteresis. A reading exactly on a 128-count boundary may change between adjacent levels; filtering can be added later if the board test shows that this matters.
-
 
 ## 9. EEPROM (Memory module)
 
@@ -245,12 +250,14 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Wear:** ~100k writes per cell (the README note about saving CLKM every minute).
 
 ### Configuration block implementation
+
 - `nvm.c` keeps EEPROM addresses private and converts each offset to the full MCC address `0xF000 + offset`. Other modules use `nvm_load()` and `nvm_save_config()` instead of knowing the memory map.
 - The checksum is the 8-bit sum, with natural modulo-256 wraparound, of the magic word and configuration bytes at offsets 1-10. Loading requires the magic word, checksum, and all bounded time/threshold fields to be valid; otherwise the documented defaults are used.
 - Configuration writes invalidate the block by clearing the magic word first. The fields and checksum are then written, and the magic word is written last. A reset during a partial write therefore causes defaults on the next boot instead of accepting incomplete configuration.
 - The saved clock hours and minutes are loaded before `clock_init()`. Seconds are deliberately restored as 0, as required by the project.
 - The records are stored consecutively at offsets 16-35, five bytes per `record_t`. On load, invalid timestamps or sensor ranges reset all four records to the documented max/min sentinels. Record writes are kept separate from configuration writes because they have different update frequencies and wear behavior.
-
+- Configuration persistence is now connected to the cyclic executive: a minute change marks `cfg_dirty`, and the foreground loop saves the current configuration and clock hours/minutes. The same path will save UI changes when the UI sets `cfg_dirty`.
+- Configuration and record validity are independent. If the configuration block is invalid, defaults and a zero clock are selected, but valid saved records are still loaded.
 
 ## 10. PWM on D2 (Timer2 + PWM6)
 
@@ -272,7 +279,6 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - Off: `PWM6CONbits.PWM6EN = 0; TMR2_Stop();`
 - **Pin:** `RA4PPS = 0x0E`, so PWM6OUT drives RA4 instead of `LATA4`. While PWM6 is disabled, its output is low.
 
-
 ## 11. USART: not in this version
 
 - **Serial communication (USART at 9600 baud) comes in a future version, not this one.** So it isn't configured in MCC and there's no driver or stub. An enabled peripheral nothing uses would only be dead code, and its pins (RC6/RC7, the mikroBUS 1 UART) stay free.
@@ -284,26 +290,25 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - `power.c`: a byte still shifting out when `SLEEP()` runs gets cut off (the baud generator runs from Fosc, which stops in sleep). So "TX in progress" (`TRMT = 0`) or a non-empty TX buffer must block sleep, like the pending flags do. Received bytes can wake the CPU only with the auto-baud/wake-up feature, otherwise RX means no sleep.
   - Task times measured in this version (timing pin toggles) show how much margin is left in the loop.
 
-
 ## 12. `system.h`: the shared contract
 
 - The one header every module includes. It fixes **the names and types of the data shared between modules**, so each module can be written independently.
 - **Declarations only** (`extern`, types, `#define`s). The variables are **defined once**, in `main.c`. A variable defined in a header would be duplicated in every file that includes it, and the link would fail.
 - **Contents:**
 
-  | Item | Type | Used for |
-  |---|---|---|
-  | `now` | `clock_time_t { h, m, s }` | LCD, records, alarm clock check |
-  | `cfg` | `config_t { pmon, tala, alaf, alah, alam, alas, alat, alal }` | same order as EEPROM offsets 1-8, so saving is a byte copy |
-  | `last_t`, `last_l` | `uint8_t` | latest readings |
-  | `alarms` | bits `ALARM_C`, `ALARM_T`, `ALARM_L` | pending alarms, shown as letters, cleared by S1 |
-  | `records[REC_COUNT]` | `record_t { h, m, s, t, l }` | max/min records (section 13) |
-  | `cfg_dirty` | `uint8_t` | the UI sets it, the main loop saves to EEPROM |
-  | `ticks` | `volatile uint8_t` | +1 per second from the Timer1 ISR |
-  | `s1_pressed`, `s2_pressed` | `volatile uint8_t` | set by the button ISRs |
-
+  | Item                           | Type                                                            | Used for                                                   |
+  | ------------------------------ | --------------------------------------------------------------- | ---------------------------------------------------------- |
+  | `now`                        | `clock_time_t { h, m, s }`                                    | LCD, records, alarm clock check                            |
+  | `cfg`                        | `config_t { pmon, tala, alaf, alah, alam, alas, alat, alal }` | same order as EEPROM offsets 1-8, so saving is a byte copy |
+  | `last_t`, `last_l`         | `uint8_t`                                                     | latest readings                                            |
+  | `alarms`                     | bits`ALARM_C`, `ALARM_T`, `ALARM_L`                       | pending alarms, shown as letters, cleared by S1            |
+  | `records[REC_COUNT]`         | `record_t { h, m, s, t, l }`                                  | max/min records (section 13)                               |
+  | `cfg_dirty`                  | `uint8_t`                                                     | the UI sets it, the main loop saves to EEPROM              |
+  | `ticks`                      | `volatile uint8_t`                                            | +1 per second from the Timer1 ISR                          |
+  | `s1_pressed`, `s2_pressed` | `volatile uint8_t`                                            | set by the button ISRs                                     |
 - **`uint8_t` everywhere:** 8-bit CPU, and every value fits in a byte. Byte operations are single instructions: fast and atomic.
 - **One byte per ISR flag:**
+
   - If S1 and S2 were bits in one byte, clearing S1 in the main loop (`flags &= ~FLAG_S1`) would be a read-modify-write. An S2 interrupt in the middle would be overwritten and lost.
   - Separate bytes can't interfere. `ticks++` (ISR) and `ticks--` (main loop) are one instruction each (`incf`/`decf`).
 - **`volatile`:** required for anything written in an ISR and read in the main loop. Otherwise the compiler can keep a stale copy in a register (`while (!flag);` would loop forever).
@@ -320,33 +325,33 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - `nvm.c` is currently a placeholder: `nvm_load()` installs the assignment defaults and initial record limits in RAM, while save functions do nothing. This allows the monitor and alarm logic to be integrated before EEPROM address, checksum, and write-timing code is added. No persistence is claimed in this stage.
 - The current TC74 API still performs its existing blocking read. The bounded I2C failure behavior must be added before the integrated system is considered robust against a disconnected sensor or stuck bus.
 
-
 ## 13. `records`: max/min with timestamps
 
 - **What the project asks for:** the **maximum and minimum** temperature and luminosity seen so far, each with the **time it happened**.
+
   - They survive power cycles (EEPROM offsets 16-35).
   - S2 shows them (T max/min for 1 s, then L max/min for 1 s).
   - The **R** option in config mode clears them.
 - **One record = 5 bytes = `{ h, m, s, t, l }`:** the event's time plus **both** readings at that moment. For example, Tmax = "at 14:32:05 the temperature was 31 °C, the highest so far, and the luminosity then was 5".
 
-  | Entry | Replaced when a new reading has |
-  |---|---|
-  | `records[REC_TMAX]` | T > stored `t` |
-  | `records[REC_TMIN]` | T < stored `t` |
-  | `records[REC_LMAX]` | L > stored `l` |
-  | `records[REC_LMIN]` | L < stored `l` |
+  | Entry                 | Replaced when a new reading has |
+  | --------------------- | ------------------------------- |
+  | `records[REC_TMAX]` | T > stored`t`                 |
+  | `records[REC_TMIN]` | T < stored`t`                 |
+  | `records[REC_LMAX]` | L > stored`l`                 |
+  | `records[REC_LMIN]` | L < stored`l`                 |
 
   On a replacement, all 5 bytes get the current time and readings.
 - **Array + enum instead of 4 variables:**
+
   - EEPROM stores the 4 records back to back (4 × 5 = 20 bytes), so saving/loading is one loop, and record i is at `0xF000 + 16 + 5·i`.
   - `REC_COUNT` keeps the size and the names in sync.
 - **Reset value** (after R or invalid EEPROM): max `t`/`l` = 0, min `t`/`l` = 255, so the next real reading replaces all four.
 
-
 ## 14. `clock.c`: the time of day
 
 - **Functions:**
-  - `clock_init(h, m)` starts at h:m:00, from CLKH/CLKM in EEPROM, so after a power cycle the clock continues from the last saved minute.
+  - `clock_init(h, m)` starts at hⓂ️00, from CLKH/CLKM in EEPROM, so after a power cycle the clock continues from the last saved minute.
   - `clock_set(h, m, s)` is used by the config menu.
   - `clock_tick()` adds one second.
 - **Design: the ISR only counts, the main loop advances the time.**
@@ -368,23 +373,24 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - `gcc -I. test/test_clock.c clock.c` checks 23:59:59 + 1 = 00:00:00 (minute changed), a normal second (no minute change), and 86400 ticks = one day, with exactly 1440 minute changes.
   - The test defines its own `now`, because there's no `main.c` on the PC.
 
-
 ## 15. Buttons: flags and debouncing (`buttons.c`)
 
 ### The problem: bounce
+
 - A mechanical contact bounces for a few ms, on press **and on release**. Each bounce can be a falling edge, i.e. another IOC interrupt.
 - So one press can count twice, and even a release can count as a press.
 
 ### Options considered
 
-| Option | Verdict |
-|---|---|
-| Delay inside the ISR | **No:** it blocks every other interrupt (the 1 s tick too). No delays in ISRs. |
-| `__delay_ms(30)` in the main loop after a press | Works, but **blocks** the main loop for 30 ms. That breaks "all tasks short and non-blocking", which matters once the USART needs servicing every ~1 ms. |
-| Capacitor on the button (RC filter) | Not possible: no extra parts, and the board has none there. |
-| **Non-blocking lockout with a timer** | **Chosen:** no waiting anywhere, and the CPU can even sleep during the lockout. |
+| Option                                            | Verdict                                                                                                                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Delay inside the ISR                              | **No:** it blocks every other interrupt (the 1 s tick too). No delays in ISRs.                                                                          |
+| `__delay_ms(30)` in the main loop after a press | Works, but**blocks** the main loop for 30 ms. That breaks "all tasks short and non-blocking", which matters once the USART needs servicing every ~1 ms. |
+| Capacitor on the button (RC filter)               | Not possible: no extra parts, and the board has none there.                                                                                                   |
+| **Non-blocking lockout with a timer**       | **Chosen:** no waiting anywhere, and the CPU can even sleep during the lockout.                                                                         |
 
 ### The chosen design
+
 - **Press:** the IOC callback sets `s1_pressed = 1` (or S2), then **locks both buttons** and starts Timer0. While locked, IOC from either button is ignored.
 - **Every 40 ms while locked** (Timer0 interrupt):
   - If either pin reads low (held or bouncing), the stable count goes back to 0.
@@ -398,6 +404,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **The main loop doesn't change:** it still just consumes `s1_pressed` / `s2_pressed`.
 
 ### Timer0 settings
+
 - **LFINTOSC, asynchronous** (`T0CON1 = 0x93`, `T0ASYNC = 1`):
   - It runs in sleep, so the lockout ends even while the CPU sleeps, and its interrupt wakes it.
   - Synchronized, it would freeze in sleep (as in section 5), and the buttons would stay locked.
@@ -405,7 +412,6 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - In 8-bit mode, Timer0 counts up to `TMR0H`, then restarts at 0 and sets its flag, so it interrupts every 40 ms until stopped.
   - `TMR0_WriteTimer(0)` before starting makes the first period a full 40 ms.
 - **Off at startup** (`T0CON0 = 0x00`): it only runs during a lockout.
-
 
 ## 16. `power.c`: sleep when idle
 
@@ -425,7 +431,6 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Measuring (for the report):**
   - Measure the board current with and without `power_sleep_if_idle()`. The onboard debugger also draws current, so the **difference** is what counts.
   - Use **Make and Program Device**, not Debug: sleep behaves differently under the debugger.
-
 
 ## 17. Hardware stack depth
 

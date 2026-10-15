@@ -104,10 +104,15 @@ void main(void) {
     while (ticks) {
         ticks--;
         LED_5_Toggle();
-        clock_tick();
+        if (clock_tick())
+          cfg_dirty = 1;
         monitor_tick();
     }
       monitor_service();
+      if (cfg_dirty) {
+        nvm_save_config(now.h, now.m);
+        cfg_dirty = 0;
+      }
     if (s1_pressed) {
         s1_pressed = 0;
         LED_3_Toggle();

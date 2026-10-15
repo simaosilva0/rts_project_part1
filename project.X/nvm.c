@@ -131,15 +131,15 @@ void nvm_load(uint8_t *clock_h, uint8_t *clock_m)
     cfg.alat = read_byte(NVM_ALAT);
     cfg.alal = read_byte(NVM_ALAL);
 
-    if (!config_is_valid(stored_clock_h, stored_clock_m)) {
+    if (config_is_valid(stored_clock_h, stored_clock_m)) {
+        *clock_h = stored_clock_h;
+        *clock_m = stored_clock_m;
+    } else {
         load_defaults();
         *clock_h = 0;
         *clock_m = 0;
-        return;
     }
 
-    *clock_h = stored_clock_h;
-    *clock_m = stored_clock_m;
     load_records();
 }
 
