@@ -289,7 +289,9 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 
 ### TC74 standby
 - `tc74_standby()` sets the TC74 shutdown bit, stopping temperature conversions and reducing sensor consumption between monitoring periods. `tc74_wake()` clears it again, but the first valid conversion after wake can take about 250 ms.
-- Standby is optional in the professor's specification and is not enabled by the current monitor. Leaving the TC74 awake keeps the PMON task simple and avoids adding a 250 ms wake-up state; it can be added later if current measurements justify the delay.
+- These functions are a foreground-only interface; they do not change `power.c`, `SLEEP()`, or any interrupt handler. The monitor uses them without taking ownership of Section A's processor sleep decision.
+- For `PMON > 1`, the monitor wakes the TC74 one second before the scheduled sample, reads it when due, and returns it to standby afterward. For `PMON = 1`, it leaves the TC74 awake because a 250 ms wake-up delay leaves little useful margin. For `PMON = 0`, it places the TC74 in standby from the foreground.
+- Standby is optional in the professor's specification. The chosen policy trades a small amount of timing state for lower TC74 consumption while preserving the PMON reading period.
 
 ## 11. USART: not in this version
 
