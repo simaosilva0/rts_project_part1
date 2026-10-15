@@ -45,6 +45,7 @@
 
 #include "buttons.h"
 #include "clock.h"
+#include "alarm_out.h"
 #include "monitor.h"
 #include "nvm.h"
 #include "power.h"
@@ -78,6 +79,7 @@ void main(void) {
   nvm_load(&saved_clock_h, &saved_clock_m);
   clock_init(saved_clock_h, saved_clock_m);
   monitor_init();
+  alarm_out_init();
   power_init();
 
   // Add handler registration
@@ -107,14 +109,18 @@ void main(void) {
         if (clock_tick())
           cfg_dirty = 1;
         monitor_tick();
+        alarm_out_tick();
     }
-      monitor_service();
-      if (cfg_dirty) {
-        nvm_save_config(now.h, now.m);
-        cfg_dirty = 0;
-      }
+    monitor_service();
+    alarm_out_service();
+    if (cfg_dirty) {
+      nvm_save_config(now.h, now.m);
+      cfg_dirty = 0;
+    }
     if (s1_pressed) {
         s1_pressed = 0;
+        alarm_out_clear();
+      monitor_clear_alarm_latches();
         LED_3_Toggle();
     }
     if (s2_pressed) {

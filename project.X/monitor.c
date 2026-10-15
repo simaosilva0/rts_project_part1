@@ -85,6 +85,13 @@ void monitor_init(void)
     luminosity_latched = 0;
 }
 
+void monitor_clear_alarm_latches(void)
+{
+    clock_latched = 0;
+    temperature_latched = 0;
+    luminosity_latched = 0;
+}
+
 void monitor_tick(void)
 {
     check_clock_alarm();

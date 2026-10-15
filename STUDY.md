@@ -197,7 +197,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - **Address:** 0x27 for a **PCF8574T**, 0x3F for a **PCF8574AT** (read the chip).
   - **Slow:** each character needs several I2C bytes (each 4-bit half is sent with E high, then E low), so a full line takes a few ms. Only refresh what changed, and never write to the LCD from an ISR.
   - **Shared bus = one user at a time:** the TC74 read and the LCD update both run in the main loop, so they never overlap.
-  - **TC74 readiness timeout:** `tc74_read()` checks the RWCR data-ready bit a bounded number of times instead of waiting forever. If the first conversion is still not ready, it returns the last valid temperature, so a normal delayed conversion does not corrupt the shared reading or freeze this TC74-level loop.
+  - **TC74 readiness timeout:** `tc74_read()` checks the RWCR data-ready bit a bounded number of times instead of waiting forever. If the first conversion is still not ready, it returns failure; `monitor.c` skips that complete sample, so stale data does not create a new record or sensor alarm.
   - **Remaining I2C limitation:** the generated example functions used by the TC74 still contain unbounded waits while opening or completing an I2C transaction. We do not edit generated files; therefore a physically stuck I2C bus can still block inside MCC before `tc74_read()` regains control. Replacing that helper with a timeout-aware hand-written transaction is a separate change, not part of this small TC74 readiness fix.
 - **Blue potentiometer = contrast.** If the LCD shows nothing or full black boxes, turn it first. The jumper by the header switches the backlight.
 - **Pull-ups:** these backpacks usually have SDA/SCL pull-ups (resistors marked `472` = 4.7 kΩ or `103` = 10 kΩ). If so, they serve the whole bus.
@@ -246,7 +246,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - The unlock must not be interrupted, or the hardware refuses the write. That's a safety feature against accidental writes.
 - **Consequence:**
   - During each write, the ISRs are delayed by a few ms. Timer1 keeps counting in hardware and its flag stays set, so **no second is lost**.
-  - The 12-byte config block blocks for ~50 ms. That's acceptable because it's rare, but write only the bytes that changed.
+  - The 12 data bytes plus magic/checksum writes block for roughly 50-65 ms. That's acceptable for the current foreground design, but the current implementation rewrites the complete block and should later be optimized to write only changed bytes if wear becomes important.
 - **Reading** is instant.
 - **Wear:** ~100k writes per cell (the README note about saving CLKM every minute).
 
@@ -279,6 +279,13 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - On: `TMR2_Start(); PWM6CONbits.PWM6EN = 1;`
   - Off: `PWM6CONbits.PWM6EN = 0; TMR2_Stop();`
 - **Pin:** `RA4PPS = 0x0E`, so PWM6OUT drives RA4 instead of `LATA4`. While PWM6 is disabled, its output is low.
+
+### Alarm output module
+- `alarm_out.c` owns the D2 PWM signal only. It uses the shared `alarms` bits as requests, loads a 50% duty cycle (`511` of `1023`), and runs PWM6 for `cfg.tala` seconds.
+- The module detects newly set alarm bits in the foreground. `alarm_out_tick()` decrements the remaining duration once per consumed Timer1 tick; `alarm_out_service()` starts PWM after `monitor.c` has evaluated the current alarm conditions.
+- A single D2 PWM signal represents any alarm type. If another alarm occurs while D2 is already active, it does not restart or extend the current signal. S1 clears the pending alarm bits through `alarm_out_clear()`.
+- Timer2 and PWM6 are stopped at startup and after the duration expires. Timer2 already uses asynchronous LFINTOSC in MCC, so D2 can remain active while the CPU sleeps.
+- D3 and D4 remain UI/status outputs: D4 indicates temperature above `ALAT`, and D3 indicates luminosity below `ALAL`. No generated MCC files are edited by this module.
 
 ## 11. USART: not in this version
 
@@ -316,15 +323,17 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Only shared things belong here.** A constant used by one module stays in that module, e.g. `STABLE_PERIODS` in `buttons.c`. Changing it then touches one file and doesn't change the contract.
 - Since it's shared, every change to `system.h` is announced to the group.
 
-## 18. Monitoring and temporary NVM layer
+## 18. Monitoring and NVM integration
 
 - `monitor.c` is a foreground service, not an interrupt module. `monitor_tick()` is called once for every consumed Timer1 second and only updates the PMON counter and clock-alarm latch. `monitor_service()` performs the slower TC74 and ADC reads when a reading is due.
 - PMON counts logical seconds rather than wall-clock reads. A value of 0 clears the pending reading and disables sensor collection. A non-zero value requests one reading after that many seconds, then repeats.
-- A sensor sample updates `last_t` and `last_l`. If it exceeds or falls below one of the four extrema, the complete record is replaced with the current time and both sensor values. Records are saved through `nvm_save_records()` only when at least one record changes.
+- A valid sensor sample updates `last_t` and `last_l`. If it exceeds or falls below one of the four extrema, the complete record is replaced with the current time and both sensor values. Records are saved through `nvm_save_records()` only when at least one record changes. If TC74 reports failure, the sample is discarded before the ADC, record, or sensor-alarm steps.
 - Temperature and luminosity alarm conditions use internal latches. A condition triggers once when it becomes active and cannot retrigger while it remains active, even if S1 later clears the displayed alarm. Returning to the safe range releases the latch for a future alarm.
+- S1 clears the pending alarm bits and resets all three monitor latches. Therefore, user interaction acknowledges the alarm and permits a new notification even if the measured condition is still active, matching the assignment's "once until user interaction" rule.
 - The clock alarm is checked once per second against ALAH, ALAM and ALAS. It is latched for the matching second so it generates only one `ALARM_C` event.
-- `nvm.c` is currently a placeholder: `nvm_load()` installs the assignment defaults and initial record limits in RAM, while save functions do nothing. This allows the monitor and alarm logic to be integrated before EEPROM address, checksum, and write-timing code is added. No persistence is claimed in this stage.
-- The current TC74 API still performs its existing blocking read. The bounded I2C failure behavior must be added before the integrated system is considered robust against a disconnected sensor or stuck bus.
+- `nvm.c` now implements the configuration block and the four records through the generated EEPROM byte APIs. It loads valid saved values, selects defaults when the configuration block is invalid, restores valid records independently, and saves changed records from the foreground monitor service.
+- Configuration writes currently rewrite the complete configuration block and its checksum. The block is invalidated first and the magic word is written last; this protects recovery after an interrupted write, but does not yet minimize EEPROM wear by writing only changed bytes.
+- The TC74 readiness polling is bounded at the hand-written API boundary. The generated I2C example functions still contain unbounded transaction waits, so a physically stuck I2C bus can still block before `tc74_read()` returns.
 
 ## 13. `records`: max/min with timestamps
 
