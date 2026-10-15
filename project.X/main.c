@@ -121,11 +121,9 @@ void main(void) {
         s1_pressed = 0;
         alarm_out_clear();
       monitor_clear_alarm_latches();
-        LED_3_Toggle();
     }
     if (s2_pressed) {
         s2_pressed = 0;
-        LED_4_Toggle();
     }
     power_sleep_if_idle();
   }

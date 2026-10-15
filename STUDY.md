@@ -285,7 +285,11 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - The module detects newly set alarm bits in the foreground. `alarm_out_tick()` decrements the remaining duration once per consumed Timer1 tick; `alarm_out_service()` starts PWM after `monitor.c` has evaluated the current alarm conditions.
 - A single D2 PWM signal represents any alarm type. If another alarm occurs while D2 is already active, it does not restart or extend the current signal. S1 clears the pending alarm bits through `alarm_out_clear()`.
 - Timer2 and PWM6 are stopped at startup and after the duration expires. Timer2 already uses asynchronous LFINTOSC in MCC, so D2 can remain active while the CPU sleeps.
-- D3 and D4 remain UI/status outputs: D4 indicates temperature above `ALAT`, and D3 indicates luminosity below `ALAL`. No generated MCC files are edited by this module.
+- `alarm_out.c` also owns the required Section B status LEDs: D4 is high when the latest valid temperature is above `ALAT`, and D3 is high when the latest valid luminosity level is below `ALAL`. They stay low until the first valid sensor sample. No generated MCC files are edited by this module.
+
+### TC74 standby
+- `tc74_standby()` sets the TC74 shutdown bit, stopping temperature conversions and reducing sensor consumption between monitoring periods. `tc74_wake()` clears it again, but the first valid conversion after wake can take about 250 ms.
+- Standby is optional in the professor's specification and is not enabled by the current monitor. Leaving the TC74 awake keeps the PMON task simple and avoids adding a 250 ms wake-up state; it can be added later if current measurements justify the delay.
 
 ## 11. USART: not in this version
 

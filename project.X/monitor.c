@@ -11,6 +11,7 @@ static uint8_t sensor_due;
 static uint8_t clock_latched;
 static uint8_t temperature_latched;
 static uint8_t luminosity_latched;
+static uint8_t sample_valid;
 
 static void record_now(record_t *record, uint8_t temperature, uint8_t luminosity)
 {
@@ -83,6 +84,7 @@ void monitor_init(void)
     clock_latched = 0;
     temperature_latched = 0;
     luminosity_latched = 0;
+    sample_valid = 0;
 }
 
 void monitor_clear_alarm_latches(void)
@@ -90,6 +92,11 @@ void monitor_clear_alarm_latches(void)
     clock_latched = 0;
     temperature_latched = 0;
     luminosity_latched = 0;
+}
+
+uint8_t monitor_sample_valid(void)
+{
+    return sample_valid;
 }
 
 void monitor_tick(void)
@@ -122,6 +129,7 @@ void monitor_service(void)
     luminosity = adc_read_level();
     last_t = temperature;
     last_l = luminosity;
+    sample_valid = 1;
 
     if (update_records(temperature, luminosity))
         nvm_save_records();
