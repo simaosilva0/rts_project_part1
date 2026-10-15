@@ -110,7 +110,8 @@ void monitor_service(void)
         return;
 
     sensor_due = 0;
-    temperature = tc74_read();
+    if (!tc74_read(&temperature))
+        return;
     luminosity = adc_read_level();
     last_t = temperature;
     last_l = luminosity;

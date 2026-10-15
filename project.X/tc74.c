@@ -7,9 +7,7 @@
 #define TC74_DATA_RDY 0x40  /* RWCR: conversion done */
 #define TC74_READY_POLLS 8
 
-static uint8_t last_temperature;
-
-uint8_t tc74_read(void)
+uint8_t tc74_read(uint8_t *temperature)
 {
     uint8_t poll;
     int8_t t;
@@ -20,15 +18,15 @@ uint8_t tc74_read(void)
             break;
     }
     if (poll == TC74_READY_POLLS)
-        return last_temperature;
+        return 0;
 
     t = (int8_t)I2C1_Read1ByteRegister(TC74_ADDR, TC74_RTR);
     if (t < 0)
         t = 0;
     if (t > 50)
         t = 50;
-    last_temperature = (uint8_t)t;
-    return last_temperature;
+    *temperature = (uint8_t)t;
+    return 1;
 }
 
 void tc74_standby(void)

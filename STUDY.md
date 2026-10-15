@@ -183,6 +183,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 ### TC74 API
 
 - `I2C1_Read1ByteRegister(0x4D, 0x00)` (from `examples/i2c1_master_example.h`) reads register 0x00 = TEMP: °C, signed 8-bit.
+- `tc74_read(&temperature)` returns 1 only when the TC74 data-ready bit was observed and writes the clamped temperature to the output parameter. It returns 0 when the bounded readiness polling expires. `monitor.c` then skips the complete sample, so a failed read cannot update `last_t`, `last_l`, extrema records, or sensor alarms with invalid data.
 
 ## 7. The LCD: 16x2 HD44780 with a PCF8574 I2C backpack
 
