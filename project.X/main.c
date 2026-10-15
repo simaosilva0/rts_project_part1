@@ -45,6 +45,8 @@
 
 #include "buttons.h"
 #include "clock.h"
+#include "monitor.h"
+#include "nvm.h"
 #include "power.h"
 #include "system.h"
 
@@ -69,8 +71,10 @@ static void tick(void) {
 void main(void) {
   // initialize the device
   SYSTEM_Initialize();
-  
+
+  nvm_load();
   clock_init(0, 0);
+  monitor_init();
   power_init();
 
   // Add handler registration
@@ -97,10 +101,10 @@ void main(void) {
     while (ticks) {
         ticks--;
         LED_5_Toggle();
-        if (clock_tick()) {
-            /* minute changed: save CLKH/CLKM here later */
-        }
+        clock_tick();
+        monitor_tick();
     }
+      monitor_service();
     if (s1_pressed) {
         s1_pressed = 0;
         LED_3_Toggle();

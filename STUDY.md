@@ -301,6 +301,16 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **Only shared things belong here.** A constant used by one module stays in that module, e.g. `STABLE_PERIODS` in `buttons.c`. Changing it then touches one file and doesn't change the contract.
 - Since it's shared, every change to `system.h` is announced to the group.
 
+## 18. Monitoring and temporary NVM layer
+
+- `monitor.c` is a foreground service, not an interrupt module. `monitor_tick()` is called once for every consumed Timer1 second and only updates the PMON counter and clock-alarm latch. `monitor_service()` performs the slower TC74 and ADC reads when a reading is due.
+- PMON counts logical seconds rather than wall-clock reads. A value of 0 clears the pending reading and disables sensor collection. A non-zero value requests one reading after that many seconds, then repeats.
+- A sensor sample updates `last_t` and `last_l`. If it exceeds or falls below one of the four extrema, the complete record is replaced with the current time and both sensor values. Records are saved through `nvm_save_records()` only when at least one record changes.
+- Temperature and luminosity alarm conditions use internal latches. A condition triggers once when it becomes active and cannot retrigger while it remains active, even if S1 later clears the displayed alarm. Returning to the safe range releases the latch for a future alarm.
+- The clock alarm is checked once per second against ALAH, ALAM and ALAS. It is latched for the matching second so it generates only one `ALARM_C` event.
+- `nvm.c` is currently a placeholder: `nvm_load()` installs the assignment defaults and initial record limits in RAM, while save functions do nothing. This allows the monitor and alarm logic to be integrated before EEPROM address, checksum, and write-timing code is added. No persistence is claimed in this stage.
+- The current TC74 API still performs its existing blocking read. The bounded I2C failure behavior must be added before the integrated system is considered robust against a disconnected sensor or stuck bus.
+
 
 ## 13. `records`: max/min with timestamps
 
