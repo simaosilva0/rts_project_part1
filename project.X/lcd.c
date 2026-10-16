@@ -1,6 +1,6 @@
 #include "lcd.h"
 #include "mcc_generated_files/mcc.h"
-#include "mcc_generated_files/examples/i2c1_master_example.h"
+#include "i2c.h"
 
 /* PCF8574 pins: P0=RS P1=RW P2=E P3=BL P4-P7=D4-D7 */
 #define LCD_RS 0x01
@@ -10,19 +10,13 @@
 static uint8_t buf[4];
 static uint8_t disp_ctl = 0x0C;   /* display on, cursor off, blink off */
 
-/* Blocking (polled MCC driver, no timeout). Main loop only, never from an ISR. */
-static void i2c_write(uint8_t len)
-{
-    I2C1_WriteNBytes(LCD_I2C_ADDR, buf, len);
-}
-
 /* Single nibble (init only) */
 static void write_nibble(uint8_t nib)
 {
     uint8_t d = (uint8_t)((nib << 4) | LCD_BL);
     buf[0] = d | LCD_E;
     buf[1] = d;
-    i2c_write(2);
+    i2c_write(LCD_I2C_ADDR, buf, 2);
 }
 
 static void write_byte(uint8_t val, uint8_t rs)
@@ -33,7 +27,7 @@ static void write_byte(uint8_t val, uint8_t rs)
     buf[1] = hi;
     buf[2] = lo | LCD_E;
     buf[3] = lo;
-    i2c_write(4);
+    i2c_write(LCD_I2C_ADDR, buf, 4);
 }
 
 static void cmd(uint8_t c)

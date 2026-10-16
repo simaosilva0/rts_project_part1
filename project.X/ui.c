@@ -5,6 +5,7 @@
 #include "lcd.h"
 #include "alarm_out.h"
 #include "monitor.h"
+#include "nvm.h"
 
 /* The clock tick has 1 s granularity, so a view of N s needs N+1 ticks to
  * last at least N s (the first tick lands 0-1 s after the press). */
@@ -160,24 +161,6 @@ static void set_state(ui_state_t s, uint8_t ticks_left)
     lcd_clear();
 }
 
-static void reset_records(void)
-{
-    uint8_t i;
-
-    for (i = 0; i < REC_COUNT; i++) {
-        records[i].h = 0;
-        records[i].m = 0;
-        records[i].s = 0;
-        records[i].t = 0;
-        records[i].l = 0;
-    }
-    records[REC_TMIN].t = 255;
-    records[REC_TMIN].l = 255;
-    records[REC_LMIN].t = 255;
-    records[REC_LMIN].l = 255;
-    cfg_dirty = 1;
-}
-
 static void config_s1(void)
 {
     if (sub) {
@@ -244,7 +227,8 @@ static void config_s2(void)
         cfg_dirty = 1;
         break;
     case F_R:
-        reset_records();
+        nvm_reset_records();
+        nvm_save_records();
         break;
     default:
         break;

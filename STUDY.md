@@ -464,3 +464,4 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - Keep ISR callbacks shallow.
   - The compiler's call graph (in the map/listing files) shows the exact chain.
 - **Current state:** no warning. Worst case 10 of 16: main → `monitor_service` → `tc74_read` → `i2c_read_reg` (4) plus the button interrupt chain (6).
+- **With the LCD UI:** main → `ui_task` → `draw` → `draw_row0` → `put_time` → `lcd_put2` → `lcd_putc` → `write_byte` → `i2c_write` = 8, plus the button interrupt (6) = **14 of 16**. Keep new UI/LCD helpers flat: two more nested levels there and it overflows again.
