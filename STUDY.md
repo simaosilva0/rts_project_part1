@@ -167,23 +167,28 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - Out of spec, but it normally works with short wires and two devices.
   - **Knob if reads fail:** lower the I2C clock (e.g. 50 kHz). Slower clocks give slow edges more time, and the TC74 doesn't need speed.
 
-### Polled driver, not interrupt-driven
+### `i2c.c`: hand-written, polled, register-level
 
-- **Polled:** the driver starts each step (start, byte, stop) and waits in a loop until the hardware's "done" flag is set. It's simple and the order of operations is obvious.
-- **Interrupt-driven:** returns immediately, and a state machine in the ISR runs each step. The CPU is free meanwhile, but there's more code, another interrupt source, and the result arrives later.
+- **Polled:** each step (start, byte, ack, stop) is started and then the code waits in a loop until the hardware's "done" flag (`SSP1IF`) is set. Simple, and the order of operations is obvious.
+- **Interrupt-driven** would return immediately and run each step from the ISR. The CPU is free meanwhile, but there's more code, another interrupt source, and the result arrives later.
 - **Why polled is enough:**
-  - A TC74 read is ~4 bytes ≈ **0.4 ms**, once every PMON seconds: under 0.05 % of the CPU time.
+  - A TC74 read is ~5 bytes ≈ **0.5 ms**, once every PMON seconds: under 0.05 % of the CPU time.
   - The Timer1 interrupt can still interrupt the wait, so no tick is late.
   - The LCD writes are longer (section 7) but still a few ms, once per second.
-- **Hang risk (confirmed in the generated code):**
-  - The polled driver waits with `while(1) { if (PIR3bits.SSP1IF) break; }`, which has no timeout. The example helpers also loop on `while (I2C1_BUSY == I2C1_Open(address));`.
-  - If the bus is broken (device unplugged, no pull-ups, a line stuck low), the main loop **freezes inside the I2C call**. The seconds keep counting in the ISR, but nothing else happens.
-  - So if the program "stops" at the first sensor read or LCD write, suspect the wiring, pull-ups and address first.
+- **Why not the MCC I2C driver:** its path (example helper → `I2C1_MasterWrite` → `MasterOperation` → `Poller` → `MasterFsm` → state function → callback → …) is ~8 calls deep. Under the TC74 or LCD code, plus an interrupt, it overflowed the 16-level hardware stack (section 17). `i2c.c` does the same transfer with the registers directly and **no nested calls** (the waits are macros).
+- **The two functions** (7-bit address, both return 1 only if every byte was acked):
+  - `i2c_write(addr, data, len)`: start, address+W, the bytes, stop.
+  - `i2c_read_reg(addr, reg, &val)`: start, address+W, register pointer, **repeated start**, address+R, receive one byte, **NACK** (tells the slave "last byte"), stop.
+- **MSSP on only during a transfer:** `SSPEN = 1` at the start, `SSPEN = 0` after the stop. MCC's `I2C1_Initialize()` still sets up the registers once (100 kHz, master mode); the MCC transfer functions are no longer called.
+- **Hang risk:**
+  - A missing device just NACKs. NACK also sets `SSP1IF`, so the functions return 0 and the loop goes on.
+  - The waits have no timeout, though. If a line is **stuck low** (short, no pull-ups), the main loop freezes inside the I2C call. The seconds keep counting in the ISR, but nothing else happens.
+  - So if the program "stops" at the first sensor read or LCD write, suspect the wiring and pull-ups first.
 
 ### TC74 API
 
-- `I2C1_Read1ByteRegister(0x4D, 0x00)` (from `examples/i2c1_master_example.h`) reads register 0x00 = TEMP: °C, signed 8-bit.
-- `tc74_read(&temperature)` returns 1 only when the TC74 data-ready bit was observed and writes the clamped temperature to the output parameter. It returns 0 when the bounded readiness polling expires. `monitor.c` then skips the complete sample, so a failed read cannot update `last_t`, `last_l`, extrema records, or sensor alarms with invalid data.
+- `i2c_read_reg(0x4D, 0x00, &val)` reads register 0x00 = TEMP: °C, signed 8-bit. `tc74_standby()`/`tc74_wake()` write register 0x01 (RWCR) with `i2c_write()`.
+- `tc74_read(&temperature)` returns 1 only when the TC74 data-ready bit was observed and writes the clamped temperature to the output parameter. It returns 0 when the bounded readiness polling expires or the TC74 doesn't ACK (unplugged). `monitor.c` then skips the complete sample, so a failed read cannot update `last_t`, `last_l`, extrema records, or sensor alarms with invalid data.
 
 ## 7. The LCD: 16x2 HD44780 with a PCF8574 I2C backpack
 
@@ -198,13 +203,13 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
   - **Slow:** each character needs several I2C bytes (each 4-bit half is sent with E high, then E low), so a full line takes a few ms. Only refresh what changed, and never write to the LCD from an ISR.
   - **Shared bus = one user at a time:** the TC74 read and the LCD update both run in the main loop, so they never overlap.
   - **TC74 readiness timeout:** `tc74_read()` checks the RWCR data-ready bit a bounded number of times instead of waiting forever. If the first conversion is still not ready, it returns failure; `monitor.c` skips that complete sample, so stale data does not create a new record or sensor alarm.
-  - **Remaining I2C limitation:** the generated example functions used by the TC74 still contain unbounded waits while opening or completing an I2C transaction. We do not edit generated files; therefore a physically stuck I2C bus can still block inside MCC before `tc74_read()` regains control. Replacing that helper with a timeout-aware hand-written transaction is a separate change, not part of this small TC74 readiness fix.
+  - **Remaining I2C limitation:** a missing TC74 is detected (NACK), but a bus line physically stuck low still blocks inside `i2c.c` (section 6).
 - **Blue potentiometer = contrast.** If the LCD shows nothing or full black boxes, turn it first. The jumper by the header switches the backlight.
 - **Pull-ups:** these backpacks usually have SDA/SCL pull-ups (resistors marked `472` = 4.7 kΩ or `103` = 10 kΩ). If so, they serve the whole bus.
 - **Voltage:**
   - The backpack's pull-ups go to its own VCC. An LCD at 5 V with the PIC at 3.3 V would pull SDA/SCL above what the PIC pins accept.
   - So **everything runs at 5 V**. The LCD needs it for contrast, and the PIC (1.8-5.5 V) and TC74 (2.7-5.5 V) both support it.
-- `lcd.c` is hand-written (MCC has no HD44780/PCF8574 driver) on top of the MCC I2C driver.
+- `lcd.c` is hand-written (MCC has no HD44780/PCF8574 driver) on top of `i2c.c` (section 6).
 
 ## 8. ADC (ADCC): the potentiometer
 
@@ -339,7 +344,7 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - The clock alarm is checked once per second against ALAH, ALAM and ALAS. It is latched for the matching second so it generates only one `ALARM_C` event.
 - `nvm.c` now implements the configuration block and the four records through the generated EEPROM byte APIs. It loads valid saved values, selects defaults when the configuration block is invalid, restores valid records independently, and saves changed records from the foreground monitor service.
 - Configuration writes currently rewrite the complete configuration block and its checksum. The block is invalidated first and the magic word is written last; this protects recovery after an interrupted write, but does not yet minimize EEPROM wear by writing only changed bytes.
-- The TC74 readiness polling is bounded at the hand-written API boundary. The generated I2C example functions still contain unbounded transaction waits, so a physically stuck I2C bus can still block before `tc74_read()` returns.
+- The TC74 readiness polling is bounded, and a NACK fails the read. Only a bus line physically stuck low can still block inside `i2c.c` before `tc74_read()` returns.
 
 ## 13. `records`: max/min with timestamps
 
@@ -453,9 +458,9 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **The limit:** the PIC16F18875 keeps return addresses in a **hardware stack of 16 levels**. Every function call uses one level, and an interrupt adds one more (plus the ISR's own calls) on top of whatever main was doing.
 - **The compiler warning** `(1393) possible hardware stack overflow detected; estimated stack depth: N` means the deepest chain plus an interrupt at the worst moment needs N > 16.
 - **What happens on overflow:** the oldest return address is overwritten. With `STVREN = ON`, the PIC resets. It may work in testing and fail only when an interrupt hits the deepest point.
-- **The usual culprit:** the LCD → I2C path. The MCC I2C driver is already several calls deep (example helper → `I2C1_Open`/`I2C1_MasterOperation` → state machine → state function), and LCD functions on top (`lcd_putc` → byte → nibble → I2C helper) add more.
+- **The culprit was the MCC I2C driver:** ~8 calls deep on its own. With the TC74 read on top it was main → `monitor_service` → `tc74_read` → `I2C1_Read1ByteRegister` → `MasterWrite` → `MasterOperation` → `Poller` → `MasterFsm` → `DO_TX_EMPTY` → `rd1RegCompleteHandler` → `SetDataCompleteCallback` → `SetCallback` = 11, and a button interrupt adds 6 (entry → `PIN_MANAGER_IOC` → `IOCBF4_ISR` → `s1_isr` → `lock` → `TMR0_WriteTimer`): **17 > 16**. The LCD (`lcd_putc` → byte → I2C) on top of the UI's draw functions would be worse.
 - **Fixes:**
-  - Fewer nested calls in the LCD send path (e.g. one function that sends a byte directly).
+  - Fewer nested calls in the I2C path: `i2c.c` (section 6) drives the registers with no nested calls.
   - Keep ISR callbacks shallow.
   - The compiler's call graph (in the map/listing files) shows the exact chain.
-- **Current state of master:** no warning. The deepest ISR chain is ISR → `PIN_MANAGER_IOC` → `IOCBF4_ISR` → `s1_isr` → `lock` → `TMR0_WriteTimer`.
+- **Current state:** no warning. Worst case 10 of 16: main → `monitor_service` → `tc74_read` → `i2c_read_reg` (4) plus the button interrupt chain (6).

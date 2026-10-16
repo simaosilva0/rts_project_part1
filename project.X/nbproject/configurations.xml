@@ -27,6 +27,7 @@
       <itemPath>power.h</itemPath>
       <itemPath>buttons.h</itemPath>
       <itemPath>tc74.h</itemPath>
+      <itemPath>i2c.h</itemPath>
       <itemPath>adc.h</itemPath>
       <itemPath>monitor.h</itemPath>
       <itemPath>nvm.h</itemPath>
@@ -68,6 +69,7 @@
       <itemPath>power.c</itemPath>
       <itemPath>buttons.c</itemPath>
       <itemPath>tc74.c</itemPath>
+      <itemPath>i2c.c</itemPath>
       <itemPath>adc.c</itemPath>
       <itemPath>monitor.c</itemPath>
       <itemPath>nvm.c</itemPath>
