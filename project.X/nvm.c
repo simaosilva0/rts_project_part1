@@ -1,3 +1,4 @@
+#include <xc.h>
 #include "nvm.h"
 #include "mcc_generated_files/memory.h"
 #include "system.h"
@@ -23,9 +24,31 @@ static uint8_t read_byte(uint8_t offset)
     return DATAEE_ReadByte(NVM_BASE + offset);
 }
 
+/* Writes one byte, and only if it changed (saves EEPROM wear and time).
+ * MCC's DATAEE_WriteByte keeps interrupts off for the whole ~4 ms write.
+ * Only the unlock sequence must not be interrupted, so interrupts come
+ * back right after WR is set and the CPU polls WR with them on. */
 static void write_byte(uint8_t offset, uint8_t value)
 {
-    DATAEE_WriteByte(NVM_BASE + offset, value);
+    uint8_t gie;
+
+    if (read_byte(offset) == value)
+        return;
+
+    NVMADRH = (uint8_t)(NVM_BASE >> 8);
+    NVMADRL = offset;
+    NVMDATL = value;
+    NVMCON1bits.NVMREGS = 1;
+    NVMCON1bits.WREN = 1;
+    gie = INTCONbits.GIE;
+    INTCONbits.GIE = 0;
+    NVMCON2 = 0x55;
+    NVMCON2 = 0xAA;
+    NVMCON1bits.WR = 1;
+    INTCONbits.GIE = gie;
+    while (NVMCON1bits.WR)
+        ;
+    NVMCON1bits.WREN = 0;
 }
 
 static uint8_t config_checksum(uint8_t clock_h, uint8_t clock_m)
@@ -147,8 +170,8 @@ void nvm_save_config(uint8_t clock_h, uint8_t clock_m)
 {
     uint8_t checksum = config_checksum(clock_h, clock_m);
 
-    /* Invalidate first, then publish the magic word only after all bytes exist. */
-    write_byte(NVM_MAGIC, 0);
+    /* Only changed bytes are written; the checksum goes last, so a save cut
+     * by a reset leaves a checksum mismatch and the defaults are loaded. */
     write_byte(NVM_PMON, cfg.pmon);
     write_byte(NVM_TALA, cfg.tala);
     write_byte(NVM_ALAF, cfg.alaf);

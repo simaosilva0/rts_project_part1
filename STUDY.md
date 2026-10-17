@@ -246,20 +246,21 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 - **API:** `DATAEE_WriteByte(uint16_t addr, uint8_t data)` and `DATAEE_ReadByte(uint16_t addr)` take the **full address 0xF000 + offset**. The README lists offsets, so the magic word (offset 0) is at 0xF000 and the records (offset 16) start at 0xF010.
 - `NVMREGS = 1` selects EEPROM/config space instead of program flash.
 - **Write time and interrupts:**
-  - Each byte takes ~**4-5 ms**.
-  - The routine disables interrupts (GIE = 0), runs the unlock sequence (`0x55`, `0xAA`, `WR = 1`), and **waits until the write finishes** before restoring GIE.
-  - The unlock must not be interrupted, or the hardware refuses the write. That's a safety feature against accidental writes.
-- **Consequence:**
-  - During each write, the ISRs are delayed by a few ms. Timer1 keeps counting in hardware and its flag stays set, so **no second is lost**.
-  - The 12 data bytes plus magic/checksum writes block for roughly 50-65 ms. That's acceptable for the current foreground design, but the current implementation rewrites the complete block and should later be optimized to write only changed bytes if wear becomes important.
+  - Each byte takes ~**4-5 ms**. For data EEPROM the CPU keeps running during the write; it only has to poll `WR` until it clears.
+  - The unlock sequence (`0x55`, `0xAA`, `WR = 1`) must not be interrupted, or the hardware refuses the write. That's a safety feature against accidental writes.
+  - MCC's `DATAEE_WriteByte` keeps GIE = 0 for the **whole** write, not just the unlock. That delays every ISR by up to ~5 ms per byte.
+- **Why that matters:**
+  - Timer1 runs asynchronously, so the MCC ISR stops it, reloads it and restarts it. A late ISR means the counts since the overflow are lost, and the clock drifts.
+  - A future USART at 9600 baud receives a byte every ~1 ms and buffers only 2. With interrupts off for 5 ms, received bytes would be lost.
+- **Our write (`write_byte()` in `nvm.c`):** turns interrupts off only for the unlock sequence, turns them back on right after `WR = 1`, then polls `WR`. Interrupts are blocked for a few instructions, not milliseconds. Reads still use `DATAEE_ReadByte`.
 - **Reading** is instant.
-- **Wear:** ~100k writes per cell (the README note about saving CLKM every minute).
+- **Wear:** ~100k writes per cell. `write_byte()` first reads the byte and skips the write if the value is the same. The per-minute clock save then writes only CLKM and the checksum (plus CLKH once an hour): ~1440 writes/day on those bytes, ~70 days to 100k. Mention it in the report as a known limit; wear leveling would extend it.
 
 ### Configuration block implementation
 
 - `nvm.c` keeps EEPROM addresses private and converts each offset to the full MCC address `0xF000 + offset`. Other modules use `nvm_load()` and `nvm_save_config()` instead of knowing the memory map.
 - The checksum is the 8-bit sum, with natural modulo-256 wraparound, of the magic word and configuration bytes at offsets 1-10. Loading requires the magic word, checksum, and all bounded time/threshold fields to be valid; otherwise the documented defaults are used.
-- Configuration writes invalidate the block by clearing the magic word first. The fields and checksum are then written, and the magic word is written last. A reset during a partial write therefore causes defaults on the next boot instead of accepting incomplete configuration.
+- Configuration writes go field by field, then the checksum, then the magic word, and only bytes that changed are written. If a reset cuts a save in the middle, the stored checksum no longer matches the stored fields, so the next boot loads the defaults instead of half-written values. The magic word is not cleared first anymore: it would double the writes on offset 0 on every save, and the checksum already catches a torn save.
 - The saved clock hours and minutes are loaded before `clock_init()`. Seconds are deliberately restored as 0, as required by the project.
 - The records are stored consecutively at offsets 16-35, five bytes per `record_t`. On load, invalid timestamps or sensor ranges reset all four records to the documented max/min sentinels. Record writes are kept separate from configuration writes because they have different update frequencies and wear behavior.
 - Configuration persistence is now connected to the cyclic executive: a minute change marks `cfg_dirty`, and the foreground loop saves the current configuration and clock hours/minutes. The same path will save UI changes when the UI sets `cfg_dirty`.
@@ -338,12 +339,12 @@ Without them, flags get set but no ISR runs. MCC leaves these lines commented so
 
 - `monitor.c` is a foreground service, not an interrupt module. `monitor_tick()` is called once for every consumed Timer1 second and only updates the PMON counter and clock-alarm latch. `monitor_service()` performs the slower TC74 and ADC reads when a reading is due.
 - PMON counts logical seconds rather than wall-clock reads. A value of 0 clears the pending reading and disables sensor collection. A non-zero value requests one reading after that many seconds, then repeats.
-- A valid sensor sample updates `last_t` and `last_l`. If it exceeds or falls below one of the four extrema, the complete record is replaced with the current time and both sensor values. Records are saved through `nvm_save_records()` only when at least one record changes. If TC74 reports failure, the sample is discarded before the ADC, record, or sensor-alarm steps.
+- A valid sensor sample updates `last_t` and `last_l`. If it exceeds or falls below one of the four extrema, the complete record is replaced with the current time and both sensor values. Records are saved through `nvm_save_records()` only when at least one record changes. The potentiometer is read first, every period, so luminosity, D3 and the L alarm keep working even if the TC74 doesn't answer. If the TC74 read fails, the temperature, the T alarm check and the records are skipped for that period (a record needs both values).
 - Temperature and luminosity alarm conditions use internal latches. A condition triggers once when it becomes active and cannot retrigger while it remains active, even if S1 later clears the displayed alarm. Returning to the safe range releases the latch for a future alarm.
 - S1 clears the pending alarm bits and resets all three monitor latches. Therefore, user interaction acknowledges the alarm and permits a new notification even if the measured condition is still active, matching the assignment's "once until user interaction" rule.
 - The clock alarm is checked once per second against ALAH, ALAM and ALAS. It is latched for the matching second so it generates only one `ALARM_C` event.
 - `nvm.c` now implements the configuration block and the four records through the generated EEPROM byte APIs. It loads valid saved values, selects defaults when the configuration block is invalid, restores valid records independently, and saves changed records from the foreground monitor service.
-- Configuration writes currently rewrite the complete configuration block and its checksum. The block is invalidated first and the magic word is written last; this protects recovery after an interrupted write, but does not yet minimize EEPROM wear by writing only changed bytes.
+- Configuration and record saves write only the bytes that changed (see section 9).
 - The TC74 readiness polling is bounded, and a NACK fails the read. Only a bus line physically stuck low can still block inside `i2c.c` before `tc74_read()` returns.
 
 ## 13. `records`: max/min with timestamps
