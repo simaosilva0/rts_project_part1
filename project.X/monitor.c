@@ -61,7 +61,7 @@ static void check_clock_alarm(void)
     }
 }
 
-static void check_sensor_alarms(uint8_t temperature, uint8_t luminosity)
+static void check_temperature_alarm(uint8_t temperature)
 {
     if (!cfg.alaf || temperature <= cfg.alat) {
         temperature_latched = 0;
@@ -69,7 +69,10 @@ static void check_sensor_alarms(uint8_t temperature, uint8_t luminosity)
         alarms |= ALARM_T;
         temperature_latched = 1;
     }
+}
 
+static void check_luminosity_alarm(uint8_t luminosity)
+{
     if (!cfg.alaf || luminosity >= cfg.alal) {
         luminosity_latched = 0;
     } else if (!luminosity_latched) {
@@ -146,20 +149,21 @@ void monitor_service(void)
         tc74_asleep = 0;
         return;
     }
-    if (!tc74_read(&temperature))
-        goto standby;
-
+    /* The potentiometer is read even if the TC74 does not answer,
+     * so luminosity and its alarm keep working without the sensor. */
     luminosity = adc_read_level();
-    last_t = temperature;
     last_l = luminosity;
     sample_valid = 1;
+    check_luminosity_alarm(luminosity);
 
-    if (update_records(temperature, luminosity))
-        nvm_save_records();
+    /* Records hold both values, so they need a valid temperature */
+    if (tc74_read(&temperature)) {
+        last_t = temperature;
+        check_temperature_alarm(temperature);
+        if (update_records(temperature, luminosity))
+            nvm_save_records();
+    }
 
-    check_sensor_alarms(temperature, luminosity);
-
-standby:
     if (cfg.pmon > 1 && !tc74_asleep) {
         tc74_standby();
         tc74_asleep = 1;
