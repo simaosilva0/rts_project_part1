@@ -13,4 +13,4 @@ void lcd_puts(const char *s);
 void lcd_put2(uint8_t v);                  /* 2 digits, zero padded */
 void lcd_cursor(uint8_t on, uint8_t blink);
 
-#endif//meowmoew moew moeeew
+#endif
