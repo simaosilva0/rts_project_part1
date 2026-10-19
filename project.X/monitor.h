@@ -8,5 +8,6 @@ void monitor_tick(void);
 void monitor_service(void);
 void monitor_clear_alarm_latches(void);
 uint8_t monitor_sample_valid(void);
+uint8_t monitor_temperature_valid(void);
 
 #endif

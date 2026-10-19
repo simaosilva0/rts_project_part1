@@ -12,6 +12,7 @@ static uint8_t clock_latched;
 static uint8_t temperature_latched;
 static uint8_t luminosity_latched;
 static uint8_t sample_valid;
+static uint8_t temperature_valid;
 static uint8_t tc74_asleep;
 
 static void record_now(record_t *record, uint8_t temperature, uint8_t luminosity)
@@ -89,6 +90,7 @@ void monitor_init(void)
     temperature_latched = 0;
     luminosity_latched = 0;
     sample_valid = 0;
+    temperature_valid = 0;
     tc74_asleep = 0;
 }
 
@@ -102,6 +104,11 @@ void monitor_clear_alarm_latches(void)
 uint8_t monitor_sample_valid(void)
 {
     return sample_valid;
+}
+
+uint8_t monitor_temperature_valid(void)
+{
+    return temperature_valid;
 }
 
 void monitor_tick(void)
@@ -157,7 +164,8 @@ void monitor_service(void)
     check_luminosity_alarm(luminosity);
 
     /* Records hold both values, so they need a valid temperature */
-    if (tc74_read(&temperature)) {
+    temperature_valid = tc74_read(&temperature);
+    if (temperature_valid) {
         last_t = temperature;
         check_temperature_alarm(temperature);
         if (update_records(temperature, luminosity))

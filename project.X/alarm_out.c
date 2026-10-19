@@ -15,18 +15,12 @@ static uint8_t seen_alarms;
 
 static void update_status_leds(void)
 {
-    if (!monitor_sample_valid()) {
-        LED_3_SetLow();
-        LED_4_SetLow();
-        return;
-    }
-
-    if (last_l < cfg.alal)
+    if (monitor_sample_valid() && last_l < cfg.alal)
         LED_3_SetHigh();
     else
         LED_3_SetLow();
 
-    if (last_t > cfg.alat)
+    if (monitor_temperature_valid() && last_t > cfg.alat)
         LED_4_SetHigh();
     else
         LED_4_SetLow();

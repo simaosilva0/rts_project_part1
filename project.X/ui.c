@@ -70,6 +70,8 @@ static void draw_row1(uint8_t t, uint8_t l)
     put_val2(t);
     lcd_puts(" C L ");
     put_lvl(l);
+    lcd_goto(1, 15);
+    lcd_putc(monitor_temperature_valid() ? ' ' : '!');
 }
 
 /* "hh:mm:ss ttC Ll" (16 columns do not fit the spec's "tt C L l") */

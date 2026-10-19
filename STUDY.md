@@ -114,6 +114,7 @@ Curiosity HPC (DM164136), PIC16F18875, all at **5 V**.
 
 - **`monitor_tick()`** (once per second): checks the alarm clock and counts PMON. **`monitor_service()`** does the slow reads when due. PMON = 0 means no readings.
 - **Reading order:** the potentiometer first, every period, so luminosity, D3 and the L alarm work even if the TC74 doesn't answer. If the TC74 fails, the temperature, T alarm and records are skipped for that period (a record needs both values).
+- **TC74 status indicator:** the normal LCD row shows `!` in its far-right column until a valid TC74 sample has been received, and again after a failed temperature read. Luminosity remains independently usable, so D3 and the L alarm can still update while D4 and temperature records/alarms wait for a valid TC74 sample.
 - **Records:** Tmax, Tmin, Lmax, Lmin, each `{h, m, s, t, l}` = 5 bytes: the time plus **both** readings at that moment. A new extreme replaces the whole record and the records are saved to EEPROM. Reset value: max = 0, min = 255, so the next reading replaces all four. `R` in config mode resets them.
 - **Alarms** (only if ALAF = 1):
   - C: hh:mm:ss equals ALAH:ALAM:ALAS. T: temperature > ALAT. L: level < ALAL.
