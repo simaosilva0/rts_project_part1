@@ -58,8 +58,10 @@ Curiosity HPC (DM164136), PIC16F18875, all at **5 V**.
 | UART (future)  | TX = RC6, RX = RC7                                 |
 | 32.768 kHz crystal | footprint Y2, **not mounted**                  |
 
-- Why 5 V: the LCD needs it for contrast, and its backpack's pull-ups go to its VCC, which would push the I2C lines above a 3.3 V PIC's limit. PIC (1.8-5.5 V) and TC74 (2.7-5.5 V) both accept 5 V.
+- Why 5 V: the LCD needs it for contrast, and its backpack's pull-ups go to its VCC, which would push the I2C lines above a 3.3 V PIC's limit. PIC16F18875 (2.3-5.5 V) and TC74 (2.7-5.5 V) both accept 5 V.
 - Unused pins stay analog (MCC default): disabling the digital input buffer avoids its switching current on floating inputs; this does not mean zero total leakage.
+
+Hardware references: [Curiosity HPC board manual](https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/UserGuides/Curiosity-HPC-Board-Users-Guide-DS40001856.pdf), [PIC16F18875 datasheet](https://ww1.microchip.com/downloads/en/DeviceDoc/PIC16LF18855-75-Data-Sheet-40001802F.pdf), [TC74 datasheet](https://ww1.microchip.com/downloads/en/DeviceDoc/21462D.pdf).
 
 ## 3. MCC and the system clock
 
@@ -102,7 +104,7 @@ Curiosity HPC (DM164136), PIC16F18875, all at **5 V**.
   - **Limit:** no timeout. A missing device NACKs and is handled, but a line stuck low freezes the main loop.
 - **TC74 (`tc74.c`):**
   - `tc74_read()` polls the data-ready bit a bounded number of times, then reads the temperature (signed °C, clamped to 0-50). Returns 0 on NACK or not ready.
-  - **Standby (optional in the spec):** for PMON > 1 the TC74 is woken 1 s before a reading (first conversion takes ~250 ms) and put back in standby after it. PMON = 1 keeps it awake; PMON = 0 keeps it in standby.
+  - **Standby (optional in the spec):** for PMON > 1 the TC74 is woken one nominal second before a reading and put back in standby after it. PMON = 1 keeps it awake; PMON = 0 keeps it in standby. The datasheet allows up to 250 ms from power-on to data ready; this is not a measured board startup time.
   - Wake/standby writes do not propagate their success to `monitor.c`; its asleep flag tracks the commanded state. The `!` indicator reports temperature-read success, not confirmation of standby or a continuous connection test.
 - **LCD (`lcd.c`):** HD44780 16x2 behind a PCF8574 I2C expander, so it uses 4-bit mode and no extra pins. Each nibble is sent with E high then E low, so a character is 4 I2C bytes (~0.5 ms). Shares the bus with the TC74; both are only used from the main loop, so they never overlap. The blue potentiometer is the contrast.
 
@@ -214,10 +216,10 @@ Recorded on 2026-10-20 from the user's physical-board testing and supplied MPLAB
 ### Startup and TC74 status (H01, H12)
 
 - LCD initialization succeeds, D5 visibly toggles, and normal operation eventually shows plausible temperature and luminosity values. Initially A was uppercase with no other alarm letters.
-- **Repeatable startup anomaly:** at one boot the clock displayed `00:35:00`, paused briefly, advanced to `00:35:02`, then returned to `00:35:00` before counting normally. The user confirmed that the two-second advance followed by a return to zero seconds happens on every boot. Its cause is unresolved; a reset/reinitialization has not been demonstrated.
-- `!` appears at startup. The user later reported roughly **10 s before the initial valid TC74 temperature after the startup jump sequence**; the interval was not precisely timed. A failed first sample followed by a retry is only a possible explanation, not a confirmed diagnosis.
 - Once running, readings were seen at five-second displayed-clock intervals, e.g. `00:35:10`, `00:35:15`. This does not establish five seconds of real elapsed time because the clock runs fast.
 - With the TC74 disconnected at power-up, `!` remained and temperature stayed at `00 C`. The user connected it while running at displayed `00:28:01`; at `00:28:05` temperature updated and `!` disappeared. This demonstrates recovery on a later successful sample. Disconnecting after a valid sample was not separately reported; retaining the previous temperature on failure is established by code (section 8).
+
+**Cold-start issue (unresolved):** unplugging/reconnecting USB causes the displayed clock to advance about two seconds and return to the saved minute before counting normally (observed `00:35:00 → 00:35:02 → 00:35:00`). This does not happen after the board reset button, programming or Debug startup. Initial temperature was reported roughly 10 s after the jump, with `!` shown until a valid reading. Debug breakpoints at `SYSTEM_Initialize()` and `clock_set()` each stopped once; initial `PCON0` was `0x3C`, but the fault was absent, so those tests cannot establish its cause. Power-up/reset or LCD initialization remains a possibility; no cause was confirmed or fix applied. Investigation stopped at the user's request.
 
 ### Buttons, screens and editing (H02)
 
@@ -264,7 +266,6 @@ Recorded on 2026-10-20 from the user's physical-board testing and supplied MPLAB
 
 ### Limits of this validation
 
-- The repeatable startup jump, delayed initial valid temperature and measured clock gain remain unresolved. This section records them without assigning an unverified cause.
 - No multimeter was available, so sleep/TC74-standby energy savings were **not measured**. Successful readings do not establish that standby writes always succeed.
 - PMON = 0/1 behavior, precise TALA timing, the full record-extrema sequence, corrupted-EEPROM recovery, and the remaining checks without reported results remain unverified on hardware. The user declined further follow-up checks; no pass is implied.
 - The successful build and functional observations support the tested behavior, not a claim that the full hardware checklist or professor's complete requirements have been validated.
